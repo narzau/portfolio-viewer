@@ -20,6 +20,12 @@ interface PriceCache {
   timestamp: number;
 }
 
+// Add an interface for price data with change percentage
+export interface PriceData {
+  price: number;
+  changePercent24Hr: number | null;
+}
+
 export class CryptoPrice {
   // API base URLs
   private apiBaseUrl = 'https://api.coincap.io/v2';
@@ -31,7 +37,7 @@ export class CryptoPrice {
   
   // Price cache with 15 second expiry
   private priceCache: Record<string, PriceCache> = {};
-  private cacheDuration = 15000; // 15 seconds
+  private cacheDuration = 2000; // 2 seconds to force more frequent updates
   
   // Check if a price is cached and valid
   private isCacheValid(cacheKey: string): boolean {
@@ -526,5 +532,164 @@ export class CryptoPrice {
       fallback[id] = id === 'usdc' ? 1.0 : 0;
     }
     return fallback;
+  }
+
+  // Add a new method to fetch price with 24h change percentage
+  async getPriceWithChange(assetId: string): Promise<PriceData | null> {
+    const cacheKey = `priceWithChange:${assetId}`;
+    
+    // Check if we have this in cache already
+    const cachedData = this.getCachedPrice(cacheKey);
+    if (cachedData !== null && typeof cachedData === 'object') {
+      return cachedData as unknown as PriceData;
+    }
+    
+    try {
+      // CoinCap API provides 24h change percentage along with current price
+      await this.respectRateLimit('coincap');
+      
+      console.log(`[CryptoPrice] Fetching price with 24h change for ${assetId}`);
+      const response = await axios.get(
+        `${this.apiBaseUrl}/assets/${assetId}`,
+        { 
+          timeout: 5000,
+          headers: {
+            'Accept': 'application/json'
+          }
+        }
+      );
+      
+      if (response.data?.data?.priceUsd && response.data?.data?.changePercent24Hr) {
+        const price = parseFloat(response.data.data.priceUsd);
+        const changePercent = parseFloat(response.data.data.changePercent24Hr);
+        
+        console.log(`[CryptoPrice] ${assetId} price: $${price}, 24h change: ${changePercent.toFixed(2)}%`);
+        
+        const result: PriceData = {
+          price,
+          changePercent24Hr: changePercent
+        };
+        
+        // Cache the result
+        this.cachePrice(cacheKey, result as unknown as number);
+        return result;
+      }
+    } catch (error: unknown) {
+      console.error(`[CryptoPrice] Error fetching price with change for ${assetId}:`, 
+        axios.isAxiosError(error) && error.response?.status 
+          ? `Status: ${error.response.status}` 
+          : error instanceof Error ? error.message : error);
+    }
+    
+    // If CoinCap fails, try to get just the price from our other sources
+    const price = await this.getAssetPrice(assetId);
+    return {
+      price,
+      changePercent24Hr: null // We couldn't get the change percentage
+    };
+  }
+
+  // Add a method to get multiple assets with price changes
+  async getMultiplePricesWithChanges(assetIds: string[]): Promise<{[coin: string]: PriceData}> {
+    // Check if we have all prices in cache already
+    const cachedResults: {[coin: string]: PriceData} = {};
+    let allCached = true;
+    
+    for (const id of assetIds) {
+      if (id === 'usdc') {
+        cachedResults[id] = { price: 1.0, changePercent24Hr: 0 };
+        continue;
+      }
+      
+      const cacheKey = `priceWithChange:${id}`;
+      const cachedData = this.getCachedPrice(cacheKey);
+      
+      if (cachedData !== null && typeof cachedData === 'object') {
+        cachedResults[id] = cachedData as unknown as PriceData;
+      } else {
+        allCached = false;
+        break;
+      }
+    }
+    
+    // Return all cached data if available
+    if (allCached) {
+      console.log('[CryptoPrice] Returning all cached prices with changes');
+      return cachedResults;
+    }
+    
+    // Fetch data from CoinCap API
+    try {
+      await this.respectRateLimit('coincap');
+      
+      const queryParams = assetIds.join(',');
+      console.log(`[CryptoPrice] Fetching prices with 24h changes for: ${queryParams}`);
+      
+      const response = await axios.get(
+        `${this.apiBaseUrl}/assets?ids=${queryParams}`,
+        {
+          timeout: 5000,
+          headers: {
+            'Accept': 'application/json'
+          }
+        }
+      );
+      
+      if (!response.data || !response.data.data || !Array.isArray(response.data.data)) {
+        console.error('[CryptoPrice] Invalid response format for assets with changes:', response.data);
+        return this.getFallbackPricesWithChanges(assetIds);
+      }
+      
+      const result: {[coin: string]: PriceData} = {};
+      
+      // Initialize with defaults (price: 0, changePercent24Hr: null)
+      for (const id of assetIds) {
+        if (id === 'usdc') {
+          result[id] = { price: 1.0, changePercent24Hr: 0 };
+        } else {
+          result[id] = { price: 0, changePercent24Hr: null };
+        }
+      }
+      
+      // Update with data from response
+      for (const asset of response.data.data) {
+        if (asset.id) {
+          const price = asset.priceUsd ? parseFloat(asset.priceUsd) : 0;
+          const changePercent = asset.changePercent24Hr ? parseFloat(asset.changePercent24Hr) : null;
+          
+          result[asset.id] = { 
+            price, 
+            changePercent24Hr: changePercent 
+          };
+          
+          // Cache individual results
+          this.cachePrice(`priceWithChange:${asset.id}`, result[asset.id] as unknown as number);
+        }
+      }
+      
+      return result;
+    } catch (error: unknown) {
+      console.error('[CryptoPrice] Error fetching prices with changes:', 
+        axios.isAxiosError(error) && error.response?.status 
+          ? `Status: ${error.response.status}` 
+          : error instanceof Error ? error.message : error);
+      
+      return this.getFallbackPricesWithChanges(assetIds);
+    }
+  }
+
+  // Helper for fallback prices with changes
+  private getFallbackPricesWithChanges(assetIds: string[]): {[coin: string]: PriceData} {
+    const result: {[coin: string]: PriceData} = {};
+    
+    for (const id of assetIds) {
+      if (id === 'usdc') {
+        result[id] = { price: 1.0, changePercent24Hr: 0 };
+      } else {
+        result[id] = { price: 0, changePercent24Hr: null };
+      }
+    }
+    
+    return result;
   }
 } 

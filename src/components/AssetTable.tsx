@@ -14,6 +14,7 @@ interface Asset {
   dailyChange?: number;
   weeklyChange?: number;
   monthlyChange?: number;
+  changePercent24h?: number;
 }
 
 interface AssetTableProps {
@@ -132,7 +133,7 @@ export function AssetTable({ assets, isLoading }: AssetTableProps) {
   }
 
   const renderChangePercentage = (changePercent?: number) => {
-    if (changePercent === undefined) return <span className="text-gray-400">-</span>;
+    if (changePercent === undefined || changePercent === null) return <span className="text-gray-400">-</span>;
     
     const isPositive = changePercent >= 0;
     return (
@@ -198,6 +199,8 @@ export function AssetTable({ assets, isLoading }: AssetTableProps) {
           const value = isNaN(balance) || isNaN(price) ? 0 : balance * price;
           const isDeleting = deletingId === asset.walletId;
           const isMergedBtc = asset.walletId === -1 && asset.symbol === 'BTC';
+          
+          const dailyChange = asset.changePercent24h;
 
           return (
             <div 
@@ -242,7 +245,7 @@ export function AssetTable({ assets, isLoading }: AssetTableProps) {
                   <div>
                     <div className="text-xs text-gray-500 dark:text-gray-400">24h %</div>
                     <div className="text-sm">
-                      {renderChangePercentage(asset.dailyChange)}
+                      {renderChangePercentage(dailyChange)}
                     </div>
                   </div>
                 </div>
@@ -277,7 +280,7 @@ export function AssetTable({ assets, isLoading }: AssetTableProps) {
                   })}
                 </div>
                 <div className="col-span-1 text-right text-sm">
-                  {renderChangePercentage(asset.dailyChange)}
+                  {renderChangePercentage(dailyChange)}
                 </div>
                 <div className="col-span-1 text-right text-sm">
                   {renderChangePercentage(asset.weeklyChange)}

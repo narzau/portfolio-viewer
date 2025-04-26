@@ -1,19 +1,19 @@
 import { WalletRepository, WalletData } from '../repositories/wallet.repository';
 import { WalletIntegrationService } from './wallet-integration.service';
 import { AssetService } from './asset.service';
-import { CryptoPrice } from '../../integrations/crypto/price';
+import { PriceCacheService } from './price-cache.service';
 
 export class WalletService {
   private repository: WalletRepository;
   private walletIntegrationService: WalletIntegrationService;
   private assetService: AssetService;
-  private priceIntegration: CryptoPrice;
+  private priceCacheService: PriceCacheService;
 
   constructor() {
     this.repository = new WalletRepository();
     this.walletIntegrationService = new WalletIntegrationService();
     this.assetService = new AssetService();
-    this.priceIntegration = new CryptoPrice();
+    this.priceCacheService = new PriceCacheService();
   }
 
   async getAllWallets() {
@@ -40,45 +40,36 @@ export class WalletService {
     if (newWallet) {
       console.log(`[WalletService] New wallet created (ID: ${newWallet.id}). Triggering balance update.`);
       try {
-        // Define prices object structure
-        let prices: { btc?: number | null, eth?: number | null, sol?: number | null, usdc?: number | null } = {}; 
-        
-        // Fetch required prices ONLY for the new wallet type
-        console.log(`[WalletService] Fetching prices for new ${newWallet.type} wallet...`);
+        // Get prices from the CACHE
+        const cachedPrices = this.priceCacheService.getPrices();
+        console.log(`[WalletService] Using cached prices for new ${newWallet.type} wallet:`, cachedPrices);
+
+        // Extract relevant prices for the new wallet type
+        let pricesToUse: { btc?: number | null, eth?: number | null, sol?: number | null, usdc?: number | null } = {};
         switch (newWallet.type) {
             case 'solana':
-                const [solPrice, solUsdcPrice] = await Promise.all([
-                    this.priceIntegration.getSolanaPrice(),
-                    this.priceIntegration.getUsdcPrice()
-                ]);
-                prices = { sol: solPrice, usdc: solUsdcPrice };
+                pricesToUse = { sol: cachedPrices.sol, usdc: cachedPrices.usdc };
                 break;
             case 'ethereum':
-                const [ethPrice, ethUsdcPrice] = await Promise.all([
-                    this.priceIntegration.getEthereumPrice(),
-                    this.priceIntegration.getUsdcPrice()
-                ]);
-                prices = { eth: ethPrice, usdc: ethUsdcPrice };
+                pricesToUse = { eth: cachedPrices.eth, usdc: cachedPrices.usdc };
                 break;
             case 'bitcoin':
-                const btcPrice = await this.priceIntegration.getBitcoinPrice();
-                prices = { btc: btcPrice };
+                pricesToUse = { btc: cachedPrices.btc };
                 break;
         }
-        console.log(`[WalletService] Fetched prices for new ${newWallet.type} wallet:`, prices);
 
-        // Trigger update with fetched prices (run in background)
+        // Trigger update with CACHED prices (run in background)
         this.walletIntegrationService.updateWalletBalances(
           newWallet.id,
           newWallet.type,
           newWallet.address,
-          prices // *** Pass the fetched prices object ***
+          pricesToUse // Pass the relevant cached prices
         ).catch(error => {
              console.error(`[WalletService] Error triggering balance update for new wallet ${newWallet.id}:`, error);
         });
       } catch (error) {
-         // Catch errors during price fetching
-         console.error(`[WalletService] Error fetching prices or triggering balance update for new wallet ${newWallet.id}:`, error);
+         // Catch errors during price retrieval or triggering update
+         console.error(`[WalletService] Error processing balance update for new wallet ${newWallet.id}:`, error);
       }
     } else {
         console.error(`[WalletService] Wallet creation seemed to succeed but returned no data.`);

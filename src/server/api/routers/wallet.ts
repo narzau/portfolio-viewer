@@ -2,11 +2,11 @@ import { z } from 'zod';
 import { publicProcedure, router } from '../trpc';
 import { WalletService } from '../../services/wallet.service';
 import { WalletIntegrationService } from '../../services/wallet-integration.service';
-import { CryptoPrice } from '../../../integrations/crypto/price';
+import { PriceCacheService } from '../../services/price-cache.service';
 
 const walletService = new WalletService();
 const walletIntegrationService = new WalletIntegrationService();
-const priceIntegration = new CryptoPrice();
+const priceCacheService = new PriceCacheService();
 
 export const walletRouter = router({
   getAll: publicProcedure.query(async () => {
@@ -40,18 +40,12 @@ export const walletRouter = router({
             const allWallets = await walletService.getAllWallets();
             console.log(`[walletRouter] Found ${allWallets.length} wallets to refresh.`);
             
-            console.log('[walletRouter] Fetching required prices...');
-            const [btcPrice, ethPrice, solPrice, usdcPrice] = await Promise.all([
-                priceIntegration.getBitcoinPrice(),
-                priceIntegration.getEthereumPrice(),
-                priceIntegration.getSolanaPrice(),
-                priceIntegration.getUsdcPrice()
-            ]);
-            const prices = { btc: btcPrice, eth: ethPrice, sol: solPrice, usdc: usdcPrice };
-            console.log('[walletRouter] Fetched prices:', prices);
+            console.log('[walletRouter] Getting cached prices...');
+            const cachedPrices = priceCacheService.getPrices();
+            console.log('[walletRouter] Using cached prices:', cachedPrices);
             
             const refreshPromises = allWallets.map(wallet => 
-                walletIntegrationService.updateWalletBalances(wallet.id, wallet.type, wallet.address, prices)
+                walletIntegrationService.updateWalletBalances(wallet.id, wallet.type, wallet.address, cachedPrices)
             );
 
             const results = await Promise.allSettled(refreshPromises);
@@ -65,7 +59,7 @@ export const walletRouter = router({
             return { success: true, count: allWallets.length };
         } catch (error) {
             console.error('[walletRouter] Critical error during refreshAll:', error);
-            throw new Error('Failed to refresh wallets');
+            throw new Error('Failed to refresh wallets (error fetching wallets or cached prices)');
         }
     }),
 }); 

@@ -25,6 +25,8 @@ export class PriceCacheService {
 
     constructor() {
         this.priceIntegration = new CryptoPrice();
+        // Initialize immediately
+        this.updatePrices();
     }
 
     // Fetches prices and updates the cache
@@ -50,10 +52,9 @@ export class PriceCacheService {
                 usdc: usdcPrice,
                 lastUpdated: new Date()
             };
-            console.log('[PriceCacheService] Price cache updated successfully:', priceCache);
+            console.log('[PriceCacheService] Price cache updated successfully');
         } catch (error) {
             console.error('[PriceCacheService] Error updating price cache:', error);
-            // Keep stale data on error
         } finally {
             isUpdating = false;
         }
@@ -61,7 +62,6 @@ export class PriceCacheService {
 
     // Returns the current cached prices
     getPrices(): Readonly<CachedPrices> {
-        // Return a read-only copy
         return Object.freeze({ ...priceCache });
     }
 
@@ -73,14 +73,15 @@ export class PriceCacheService {
         }
         
         console.log(`[PriceCacheService] Starting background price update every ${intervalMinutes} minutes.`);
-        // Run immediately first time
-        this.updatePrices(); 
+        
+        // Run immediately
+        this.updatePrices();
         
         updateInterval = setInterval(() => {
             this.updatePrices();
         }, intervalMinutes * 60 * 1000);
         
-        // Ensure interval is cleared on shutdown if possible (depends on env)
+        // Ensure interval is cleared on shutdown if possible
         process.on('SIGTERM', () => this.stopBackgroundUpdate());
         process.on('SIGINT', () => this.stopBackgroundUpdate());
     }

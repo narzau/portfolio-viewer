@@ -1,10 +1,11 @@
 'use client';
 
 import React, { useState, useMemo } from 'react';
+import { trpc } from '@/lib/trpc/client';
 
 interface Asset {
   id: number | string;
-  walletId: number | string;
+  walletId: number;
   symbol: string;
   name: string;
   balance: string;
@@ -36,6 +37,8 @@ const SortIcon = ({ direction }: { direction: SortDirection }) => {
 
 export function AssetTable({ assets, isLoading }: AssetTableProps) {
   const [sortConfig, setSortConfig] = useState<SortConfig | null>(null);
+  const utils = trpc.useUtils();
+  const [deletingId, setDeletingId] = useState<number | null>(null);
 
   const displayedTotalValue = useMemo(() => assets.reduce((sum, asset) => {
     const balance = parseFloat(asset.balance);
@@ -85,6 +88,30 @@ export function AssetTable({ assets, isLoading }: AssetTableProps) {
     setSortConfig({ key, direction });
   };
 
+  const deleteWalletMutation = trpc.wallet.delete.useMutation({
+    onSuccess: (_, variables) => {
+      console.log(`Wallet ${variables.id} deleted successfully.`);
+      utils.asset.getAll.invalidate();
+      utils.wallet.getAll.invalidate();
+      setDeletingId(null);
+    },
+    onError: (error, variables) => {
+      console.error(`Failed to delete wallet ${variables.id}:`, error);
+      alert(`Error deleting wallet: ${error.message}`);
+      setDeletingId(null);
+    },
+    onMutate: (variables) => {
+        setDeletingId(variables.id);
+    }
+  });
+
+  const handleDelete = (walletId: number) => {
+    if (deletingId === walletId) return;
+    if (window.confirm('Are you sure you want to delete this wallet and all its assets?')) {
+      deleteWalletMutation.mutate({ id: walletId });
+    }
+  };
+
   if (isLoading) {
     return (
       <div className="animate-pulse">
@@ -131,7 +158,7 @@ export function AssetTable({ assets, isLoading }: AssetTableProps) {
   return (
     <div className="overflow-x-auto">
       <div className="grid grid-cols-1 gap-3">
-        <div className="bg-gray-50 dark:bg-gray-800 rounded-md p-3 hidden md:grid md:grid-cols-12 gap-2">
+        <div className="bg-gray-50 dark:bg-gray-800 rounded-md p-3 hidden md:grid md:grid-cols-13 gap-2">
           <div className="col-span-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
             <button 
                 type="button"
@@ -160,12 +187,17 @@ export function AssetTable({ assets, isLoading }: AssetTableProps) {
           <div className="col-span-2 flex justify-end">
               {renderSortableHeader('value', 'Value')}
           </div>
+          <div className="col-span-1 flex justify-end text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
+             Actions
+          </div>
         </div>
         
         {sortedAssets.map((asset) => {
           const balance = parseFloat(asset.balance);
           const price = parseFloat(asset.price);
           const value = isNaN(balance) || isNaN(price) ? 0 : balance * price;
+          const isDeleting = deletingId === asset.walletId;
+          const isMergedBtc = asset.walletId === -1 && asset.symbol === 'BTC';
 
           return (
             <div 
@@ -214,9 +246,20 @@ export function AssetTable({ assets, isLoading }: AssetTableProps) {
                     </div>
                   </div>
                 </div>
+                {!isMergedBtc && (
+                  <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-3 flex justify-end">
+                    <button
+                      onClick={() => handleDelete(asset.walletId)}
+                      disabled={isDeleting}
+                      className="text-red-500 hover:text-red-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isDeleting ? 'Deleting...' : 'Delete Wallet'}
+                    </button>
+                  </div>
+                )}
               </div>
               
-              <div className="hidden md:grid md:grid-cols-12 gap-2 items-center">
+              <div className="hidden md:grid md:grid-cols-13 gap-2 items-center">
                 <div className="col-span-3">
                   <div className="text-md font-medium">{asset.symbol}</div>
                   <div className="text-xs text-gray-500 dark:text-gray-400">{asset.name}</div>
@@ -247,6 +290,17 @@ export function AssetTable({ assets, isLoading }: AssetTableProps) {
                     minimumFractionDigits: 2,
                     maximumFractionDigits: 2,
                   })}
+                </div>
+                <div className="col-span-1 flex justify-end">
+                  {!isMergedBtc && (
+                    <button
+                      onClick={() => handleDelete(asset.walletId)}
+                      disabled={isDeleting}
+                      className="text-red-500 hover:text-red-700 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {isDeleting ? 'Deleting...' : 'Delete'}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

@@ -1,5 +1,7 @@
 'use client';
 
+import Link from 'next/link';
+
 interface DashboardHeaderProps {
   totalBalance: number;
 }
@@ -7,7 +9,14 @@ interface DashboardHeaderProps {
 export function DashboardHeader({ totalBalance }: DashboardHeaderProps) {
   return (
     <div className="bg-white dark:bg-gray-800 rounded-lg shadow p-6">
-      <h1 className="text-2xl font-bold mb-2">My Portfolio</h1>
+      <div className="flex justify-between items-center mb-2">
+        <h1 className="text-2xl font-bold">My Portfolio</h1>
+        <Link href="/wallets/new" passHref>
+          <button className="btn-primary px-3 py-2 rounded-md text-sm whitespace-nowrap">
+            Add New Wallet
+          </button>
+        </Link>
+      </div>
       <div className="flex justify-between items-end">
         <div>
           <p className="text-sm text-gray-500 dark:text-gray-400">Total Balance</p>

@@ -35,44 +35,35 @@ export class WalletService {
   }
 
   async createWallet(data: WalletData) {
+    console.log(`[WalletService] Creating new ${data.type} wallet with address: ${data.address}`);
+    
+    // Create the wallet record
     const newWallet = await this.repository.create(data);
     
-    if (newWallet) {
-      console.log(`[WalletService] New wallet created (ID: ${newWallet.id}). Triggering balance update.`);
-      try {
-        // Get prices from the CACHE
-        const cachedPrices = this.priceCacheService.getPrices();
-        console.log(`[WalletService] Using cached prices for new ${newWallet.type} wallet:`, cachedPrices);
-
-        // Extract relevant prices for the new wallet type
-        let pricesToUse: { btc?: number | null, eth?: number | null, sol?: number | null, usdc?: number | null } = {};
-        switch (newWallet.type) {
-            case 'solana':
-                pricesToUse = { sol: cachedPrices.sol, usdc: cachedPrices.usdc };
-                break;
-            case 'ethereum':
-                pricesToUse = { eth: cachedPrices.eth, usdc: cachedPrices.usdc };
-                break;
-            case 'bitcoin':
-                pricesToUse = { btc: cachedPrices.btc };
-                break;
-        }
-
-        // Trigger update with CACHED prices (run in background)
-        this.walletIntegrationService.updateWalletBalances(
-          newWallet.id,
-          newWallet.type,
-          newWallet.address,
-          pricesToUse // Pass the relevant cached prices
-        ).catch(error => {
-             console.error(`[WalletService] Error triggering balance update for new wallet ${newWallet.id}:`, error);
-        });
-      } catch (error) {
-         // Catch errors during price retrieval or triggering update
-         console.error(`[WalletService] Error processing balance update for new wallet ${newWallet.id}:`, error);
-      }
-    } else {
-        console.error(`[WalletService] Wallet creation seemed to succeed but returned no data.`);
+    if (!newWallet) {
+        console.error(`[WalletService] Wallet creation failed for address ${data.address}`);
+        throw new Error('Failed to create wallet record');
+    }
+    
+    console.log(`[WalletService] New wallet created with ID ${newWallet.id}`);
+    
+    try {
+      // Get the latest prices
+      const prices = this.priceCacheService.getPrices();
+      console.log(`[WalletService] Fetched prices for update:`, prices);
+      
+      // Immediately update balances
+      await this.walletIntegrationService.updateWalletBalances(
+        newWallet.id,
+        newWallet.type,
+        newWallet.address,
+        prices
+      );
+      
+      console.log(`[WalletService] Successfully updated balances for wallet ${newWallet.id}`);
+    } catch (error) {
+      // Log error but don't fail wallet creation
+      console.error(`[WalletService] Error updating balances for new wallet ${newWallet.id}:`, error);
     }
     
     return newWallet; 
@@ -94,16 +85,13 @@ export class WalletService {
         // Check if wallet was actually deleted
         if (result.length === 0) {
             console.warn(`[WalletService] Wallet with ID ${id} not found for deletion.`);
-            // throw new Error(`Wallet with id ${id} not found`); // Optionally throw error
             return { success: false, message: 'Wallet not found' };
         }
 
         return { success: true };
     } catch (error) {
         console.error(`[WalletService] Error deleting wallet ID ${id}:`, error);
-        // Re-throw or return error status
         throw new Error(`Failed to delete wallet: ${error instanceof Error ? error.message : String(error)}`);
-        // return { success: false, message: 'Failed to delete wallet' };
     }
   }
 } 

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { trpc } from '../lib/trpc/client';
 import { AssetTable } from '../components/AssetTable';
 import { DashboardHeader } from '../components/DashboardHeader';
@@ -30,6 +30,18 @@ export default function Home() {
 
   const utils = trpc.useUtils();
   
+  // Initialize backend services
+  useEffect(() => {
+    fetch('/api/initialize')
+      .then(response => response.json())
+      .then(data => {
+        console.log('Backend services initialized:', data);
+      })
+      .catch(error => {
+        console.error('Failed to initialize backend services:', error);
+      });
+  }, []);
+  
   const { data: allAssetsData, isLoading: isLoadingAssets, isFetching: isFetchingAssets } = trpc.asset.getAll.useQuery();
 
   const transformAssets = (dbAssets: DbAsset[] = []): Asset[] => {
@@ -44,7 +56,56 @@ export default function Home() {
     }));
   };
 
-  const displayedAssets = useMemo(() => transformAssets(allAssetsData), [allAssetsData]);
+  // Merge Bitcoin wallets into a single asset
+  const processedAssets = useMemo(() => {
+    if (!allAssetsData) return [];
+    
+    const transformed = transformAssets(allAssetsData);
+    
+    // Group Bitcoin assets together
+    const btcAssets = transformed.filter(asset => asset.symbol === 'BTC');
+    const nonBtcAssets = transformed.filter(asset => asset.symbol !== 'BTC');
+    
+    // If there are multiple BTC assets, merge them
+    if (btcAssets.length > 1) {
+      console.log(`Merging ${btcAssets.length} Bitcoin wallets`);
+      
+      // Calculate total BTC balance
+      let totalBtcBalance = 0;
+      let latestUpdate = new Date(0);
+      let priceToUse = '0';
+      
+      for (const btc of btcAssets) {
+        totalBtcBalance += parseFloat(btc.balance);
+        const updateDate = new Date(btc.lastUpdated);
+        
+        // Keep the latest price and update time
+        if (updateDate > latestUpdate) {
+          latestUpdate = updateDate;
+          priceToUse = btc.price;
+        }
+      }
+      
+      // Create a merged BTC asset (using the first BTC asset's ID and walletId for reference)
+      const mergedBtc: Asset = {
+        id: btcAssets[0].id,
+        walletId: -1, // Special walletId to indicate merged asset
+        symbol: 'BTC',
+        name: 'Bitcoin (Merged)',
+        balance: totalBtcBalance.toString(),
+        price: priceToUse,
+        lastUpdated: latestUpdate.toString()
+      };
+      
+      // Return merged BTC with other non-BTC assets
+      return [...nonBtcAssets, mergedBtc];
+    }
+    
+    // If there's only one or no BTC assets, return all assets unchanged
+    return transformed;
+  }, [allAssetsData]);
+
+  const displayedAssets = processedAssets;
 
   const totalBalance = useMemo(() => displayedAssets?.reduce((sum: number, asset: Asset) => {
       const balance = parseFloat(asset.balance);

@@ -13,6 +13,7 @@ export const settings = {
   // Server settings
   PORT: process.env.PORT || '3000',
   NODE_ENV: process.env.NODE_ENV || 'development',
+  PAGE_ACCESS_KEY: process.env.PAGE_ACCESS_KEY || '',
   
   // API URLs
   API_URL: process.env.API_URL || 'http://localhost:3000/api',

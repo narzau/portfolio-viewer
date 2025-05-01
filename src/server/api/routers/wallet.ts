@@ -43,27 +43,26 @@ export const walletRouter = router({
     .mutation(async () => {
         console.log('[walletRouter] Refresh All mutation called');
         try {
-            // --- REMOVE Force price cache update --- 
-            // console.log('[walletRouter] Forcing price cache update before refreshing balances...');
-            // await priceCacheService.updatePrices(); // Wait for potential update
-            // console.log('[walletRouter] Price cache update finished.');
-            // --- End REMOVE price cache update ---
+            // --- No longer forcing price cache update here ---
             
             const allWallets = await walletService.getAllWallets();
             console.log(`[walletRouter] Found ${allWallets.length} wallets to refresh.`);
             
             console.log('[walletRouter] Getting latest prices from cache...');
-            // Get the newly updated prices from the cache
-            const cachedPrices = priceCacheService.getPrices();
+            // Await the prices from Redis cache
+            const cachedPrices = await priceCacheService.getPrices();
             console.log('[walletRouter] Using latest cached prices:', cachedPrices);
             
-            // Convert cached prices to non-nullable format
+            // Handle null case: provide defaults if cache is unavailable
+            const defaultPrices = { btc: 0, eth: 0, sol: 0, usdc: 1, xmr: 0 };
+            
+            // Convert cached prices to non-nullable format, using defaults if cache is null
             const validPrices: {[key: string]: number} = {
-              btc: cachedPrices.btc ?? 0,
-              eth: cachedPrices.eth ?? 0,
-              sol: cachedPrices.sol ?? 0,
-              usdc: cachedPrices.usdc ?? 1,
-              xmr: cachedPrices.xmr ?? 0
+              btc: cachedPrices?.btc ?? defaultPrices.btc,
+              eth: cachedPrices?.eth ?? defaultPrices.eth,
+              sol: cachedPrices?.sol ?? defaultPrices.sol,
+              usdc: cachedPrices?.usdc ?? defaultPrices.usdc,
+              xmr: cachedPrices?.xmr ?? defaultPrices.xmr
             };
             
             const refreshPromises = allWallets.map(wallet => 

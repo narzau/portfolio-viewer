@@ -1,50 +1,71 @@
 import { CryptoPrice } from '../../integrations/crypto/price';
+import { createClient, RedisClientType } from 'redis';
 
+// Use number for timestamp (milliseconds since epoch)
 interface CachedPrices {
     btc: number | null;
     eth: number | null;
     sol: number | null;
     usdc: number | null;
     xmr: number | null;
-    lastUpdated: Date | null;
+    lastUpdated: number | null; // Changed to number
 }
 
-// Simple in-memory cache
-let priceCache: CachedPrices = {
-    btc: null,
-    eth: null,
-    sol: null,
-    usdc: null,
-    xmr: null,
-    lastUpdated: null,
-};
-
-let isUpdating = false; // Simple lock to prevent concurrent updates
-let updateInterval: NodeJS.Timeout | null = null;
+// Cache key in Redis
+const CACHE_KEY = 'priceCache';
+// Cache expiry time in seconds (e.g., 5 minutes)
+const CACHE_TTL_SECONDS = 5 * 60;
+// How old the cache can be before triggering a background refresh (e.g., 2 minutes)
+const CACHE_STALE_MS = 2 * 60 * 1000; 
 
 export class PriceCacheService {
     private priceIntegration: CryptoPrice;
+    private redisClient: RedisClientType;
+    private isRedisConnected = false;
+    private isUpdating = false; // Still useful as a local lock
 
     constructor() {
         this.priceIntegration = new CryptoPrice();
-        // Start background update on initialization
-        this.startBackgroundUpdate(); // Ensure it starts
-    }
+        
+        // Initialize Redis client
+        // The redis library automatically picks up REDIS_URL from env if present
+        this.redisClient = createClient({ 
+            url: process.env.REDIS_URL // Explicitly pass from process.env just in case
+        });
 
-    // Fetches prices and updates the cache
-    async updatePrices() {
-        if (isUpdating) {
-            console.log('[PriceCacheService] Update already in progress, skipping.');
-            return;
+        this.redisClient.on('error', (err) => {
+            // Log Redis errors
+            console.error('[PriceCacheService][Redis] Connection Error:', err);
+            this.isRedisConnected = false;
+        });
+        
+        this.redisClient.on('connect', () => {
+            // Log successful connection
+             console.log('[PriceCacheService][Redis] Successfully connected.');
+            this.isRedisConnected = true;
+        });
+        
+        this.redisClient.connect().catch(err => {
+             // Log initial connection failure
+             console.error('[PriceCacheService][Redis] Initial connection failed:', err);
+        });
+    }
+    
+    // Fetches fresh prices and updates the cache in Redis
+    private async _fetchAndCachePrices(): Promise<CachedPrices | null> {
+        if (this.isUpdating) {
+            console.log('[PriceCacheService] Background update already in progress, skipping fetch.');
+            // If update is already running, try returning current cache one more time
+            return this._readCacheFromRedis(); 
         }
-        isUpdating = true;
-        console.log('[PriceCacheService] Starting price cache update...');
-        
-        // Store previous prices in case of individual failures
-        const previousPrices = { ...priceCache }; 
-        
+        this.isUpdating = true;
+        console.log('[PriceCacheService] Starting price fetch and cache update...');
+
+        let previousPrices: CachedPrices | null = null;
         try {
-            // Use Promise.allSettled to handle individual failures
+             // Get previous values from cache to use as fallbacks
+            previousPrices = await this._readCacheFromRedis();
+            
             const results = await Promise.allSettled([
                 this.priceIntegration.getBitcoinPrice(),
                 this.priceIntegration.getEthereumPrice(),
@@ -52,102 +73,91 @@ export class PriceCacheService {
                 this.priceIntegration.getUsdcPrice(),
                 this.priceIntegration.getMoneroPrice()
             ]);
-            
+
             const [btcResult, ethResult, solResult, usdcResult, xmrResult] = results;
 
-            const newPrices: Partial<CachedPrices> = {};
-
-            // Process BTC
-            if (btcResult.status === 'fulfilled' && typeof btcResult.value === 'number') {
-                newPrices.btc = btcResult.value;
-            } else {
-                newPrices.btc = previousPrices.btc; // Keep old price on failure
-                console.warn('[PriceCacheService] Failed to fetch BTC price, keeping previous value.', btcResult.status === 'rejected' ? btcResult.reason : 'Invalid value');
-            }
-            
-            // Process ETH
-            if (ethResult.status === 'fulfilled' && typeof ethResult.value === 'number') {
-                newPrices.eth = ethResult.value;
-            } else {
-                newPrices.eth = previousPrices.eth; // Keep old price on failure
-                console.warn('[PriceCacheService] Failed to fetch ETH price, keeping previous value.', ethResult.status === 'rejected' ? ethResult.reason : 'Invalid value');
-            }
-            
-            // Process SOL
-            if (solResult.status === 'fulfilled' && typeof solResult.value === 'number') {
-                newPrices.sol = solResult.value;
-            } else {
-                newPrices.sol = previousPrices.sol; // Keep old price on failure
-                console.warn('[PriceCacheService] Failed to fetch SOL price, keeping previous value.', solResult.status === 'rejected' ? solResult.reason : 'Invalid value');
-            }
-            
-            // Process USDC
-            if (usdcResult.status === 'fulfilled' && typeof usdcResult.value === 'number') {
-                newPrices.usdc = usdcResult.value;
-            } else {
-                newPrices.usdc = previousPrices.usdc ?? 1; // Keep old price or default to 1
-                console.warn('[PriceCacheService] Failed to fetch USDC price, keeping previous value.', usdcResult.status === 'rejected' ? usdcResult.reason : 'Invalid value');
-            }
-            
-            // Process XMR
-            if (xmrResult.status === 'fulfilled' && typeof xmrResult.value === 'number') {
-                newPrices.xmr = xmrResult.value;
-            } else {
-                newPrices.xmr = previousPrices.xmr; // Keep old XMR price on failure
-                console.warn('[PriceCacheService] Failed to fetch XMR price, keeping previous value.', xmrResult.status === 'rejected' ? xmrResult.reason : 'Invalid value');
-            }
-                
-            // Update cache with new/old prices
-            priceCache = {
-                btc: newPrices.btc ?? previousPrices.btc, // Use new or fallback explicitly again
-                eth: newPrices.eth ?? previousPrices.eth,
-                sol: newPrices.sol ?? previousPrices.sol,
-                usdc: newPrices.usdc ?? previousPrices.usdc ?? 1,
-                xmr: newPrices.xmr ?? previousPrices.xmr,
-                lastUpdated: new Date()
+            // Build new cache data, falling back to previous values
+            const newCacheData: CachedPrices = {
+                btc: (btcResult.status === 'fulfilled' && typeof btcResult.value === 'number') ? btcResult.value : previousPrices?.btc ?? null,
+                eth: (ethResult.status === 'fulfilled' && typeof ethResult.value === 'number') ? ethResult.value : previousPrices?.eth ?? null,
+                sol: (solResult.status === 'fulfilled' && typeof solResult.value === 'number') ? solResult.value : previousPrices?.sol ?? null,
+                usdc: (usdcResult.status === 'fulfilled' && typeof usdcResult.value === 'number') ? usdcResult.value : previousPrices?.usdc ?? 1,
+                xmr: (xmrResult.status === 'fulfilled' && typeof xmrResult.value === 'number') ? xmrResult.value : previousPrices?.xmr ?? null,
+                lastUpdated: Date.now() // Use timestamp number
             };
-            console.log('[PriceCacheService] Price cache update attempt finished.');
+
+            // Store in Redis with TTL
+            if (this.isRedisConnected) {
+                try {
+                    await this.redisClient.set(CACHE_KEY, JSON.stringify(newCacheData), {
+                        EX: CACHE_TTL_SECONDS 
+                    });
+                    // Log successful cache write
+                    console.log(`[PriceCacheService][Redis] Wrote cache key '${CACHE_KEY}' with TTL ${CACHE_TTL_SECONDS}s.`);
+                } catch (redisError) {
+                     console.error(`[PriceCacheService][Redis] Error writing cache key '${CACHE_KEY}':`, redisError);
+                }
+            } else {
+                 console.error('[PriceCacheService][Redis] Not connected, cannot write cache.');
+            }
             
+            return newCacheData;
+
         } catch (error) {
-            // This catch is unlikely with allSettled unless there's a fundamental issue
-            console.error('[PriceCacheService] Unexpected error during Promise.allSettled execution:', error);
+            console.error('[PriceCacheService] Error during fetch/cache update:', error);
+            return previousPrices; // Return previous cache on error
         } finally {
-            isUpdating = false;
+            this.isUpdating = false;
         }
     }
 
-    // Returns the current cached prices
-    getPrices(): Readonly<CachedPrices> {
-        return Object.freeze({ ...priceCache });
+    // Reads the cache object from Redis
+    private async _readCacheFromRedis(): Promise<CachedPrices | null> {
+        if (!this.isRedisConnected) {
+            console.warn('[PriceCacheService][Redis] Not connected, cannot read cache.');
+            return null;
+        }
+        try {
+            const cachedString = await this.redisClient.get(CACHE_KEY);
+            if (cachedString) {
+                // Log successful cache read
+                console.log(`[PriceCacheService][Redis] Read cache key '${CACHE_KEY}'.`);
+                return JSON.parse(cachedString) as CachedPrices;
+            } else {
+                // Log cache miss
+                console.log(`[PriceCacheService][Redis] Cache key '${CACHE_KEY}' not found.`);
+            }
+        } catch (error) {
+            console.error(`[PriceCacheService][Redis] Error reading cache key '${CACHE_KEY}':`, error);
+        }
+        return null;
     }
 
-    // Starts the periodic background update
-    startBackgroundUpdate(intervalMinutes: number = 2) { // Default to 2 minutes
-        if (updateInterval) {
-            console.warn('[PriceCacheService] Background update already running.');
-            return;
+    // Public method to get prices
+    async getPrices(): Promise<Readonly<CachedPrices> | null> {
+        const cachedData = await this._readCacheFromRedis();
+        const now = Date.now();
+
+        if (cachedData && cachedData.lastUpdated && (now - cachedData.lastUpdated < CACHE_STALE_MS)) {
+            // Log cache hit (fresh)
+            console.log(`[PriceCacheService] Cache hit (fresh) for key '${CACHE_KEY}'.`);
+            return Object.freeze(cachedData);
         }
-        
-        console.log(`[PriceCacheService] Starting background price update every ${intervalMinutes} minutes.`);
-        
-        // Run immediately
-        this.updatePrices();
-        
-        updateInterval = setInterval(() => {
-            this.updatePrices();
-        }, intervalMinutes * 60 * 1000);
-        
-        // Ensure interval is cleared on shutdown if possible
-        process.on('SIGTERM', () => this.stopBackgroundUpdate());
-        process.on('SIGINT', () => this.stopBackgroundUpdate());
+
+        if (cachedData) {
+             // Log cache hit (stale)
+             console.log(`[PriceCacheService] Cache hit (stale) for key '${CACHE_KEY}' (last updated: ${new Date(cachedData.lastUpdated!).toISOString()}). Triggering background update.`);
+             this._fetchAndCachePrices(); // Fire-and-forget update
+             return Object.freeze(cachedData); // Return stale data
+        } else {
+            // Log cache miss
+            console.log(`[PriceCacheService] Cache miss for key '${CACHE_KEY}'. Triggering background update.`);
+            this._fetchAndCachePrices(); // Fire-and-forget update
+            return null; // Return null as cache was empty
+        }
     }
 
-    // Stops the background update
-    stopBackgroundUpdate() {
-        if (updateInterval) {
-            console.log('[PriceCacheService] Stopping background price update.');
-            clearInterval(updateInterval);
-            updateInterval = null;
-        }
-    }
+    // No longer need background interval methods
+    // startBackgroundUpdate() { ... }
+    // stopBackgroundUpdate() { ... }
 } 

@@ -5,7 +5,7 @@ import { eq } from 'drizzle-orm';
 export interface WalletData {
   name: string;
   address: string;
-  type: 'solana' | 'ethereum' | 'bitcoin';
+  type: 'solana' | 'ethereum' | 'bitcoin' | 'monero';
 }
 
 export class WalletRepository {

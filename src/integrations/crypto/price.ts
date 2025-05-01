@@ -385,8 +385,14 @@ export class CryptoPrice {
   }
   
   async getUsdcPrice(): Promise<number> {
-    // USDC is pegged to USD
-    return 1.0;
+    return 1; // USDC is a stablecoin pegged to USD
+  }
+  
+  async getMoneroPrice(): Promise<number> {
+    console.log('[CryptoPrice] Getting Monero price');
+    const price = await this.getPrice('monero', 'monero', 'XMRUSDT');
+    console.log(`[CryptoPrice] Monero price: $${price}`);
+    return price;
   }
   
   async getMultiplePrices(assetIds: string[]): Promise<{[coin: string]: number}> {

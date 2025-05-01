@@ -4,7 +4,7 @@ export const wallets = pgTable('wallets', {
   id: serial('id').primaryKey(),
   name: text('name').notNull(),
   address: text('address').notNull(),
-  type: text('type').notNull(), // "solana", "ethereum", "bitcoin"
+  type: text('type').notNull(), // "solana", "ethereum", "bitcoin", "monero"
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

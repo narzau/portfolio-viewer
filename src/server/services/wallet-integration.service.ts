@@ -1,88 +1,107 @@
+import { AssetService } from './asset.service';
 import { SolanaIntegration } from '../../integrations/crypto/solana';
 import { EthereumIntegration } from '../../integrations/crypto/ethereum';
 import { BitcoinIntegration } from '../../integrations/crypto/bitcoin';
-import { AssetService } from './asset.service';
-
-// Simple interface for passed-in prices
-interface FetchedPrices {
-    btc?: number | null;
-    eth?: number | null;
-    sol?: number | null;
-    usdc?: number | null;
-}
+import { CryptoPrice } from '../../integrations/crypto/price';
 
 export class WalletIntegrationService {
+  private assetService: AssetService;
   private solanaIntegration: SolanaIntegration;
   private ethereumIntegration: EthereumIntegration;
   private bitcoinIntegration: BitcoinIntegration;
-  private assetService: AssetService;
+  private cryptoPrice: CryptoPrice;
   
   constructor() {
+    this.assetService = new AssetService();
     this.solanaIntegration = new SolanaIntegration();
     this.ethereumIntegration = new EthereumIntegration();
     this.bitcoinIntegration = new BitcoinIntegration();
-    this.assetService = new AssetService();
+    this.cryptoPrice = new CryptoPrice();
   }
   
   // Update wallet balances based on type
-  async updateWalletBalances(walletId: number, walletType: string, address: string, prices: FetchedPrices) {
-    console.log(`[WalletIntegrationService] Updating ${walletType} wallet ${walletId} (${address})`);
+  async updateWalletBalances(walletId: number, walletType: string, address: string, prices: {[key: string]: number}) {
+    console.log(`[WalletIntegrationService] Updating balances for wallet ID ${walletId} (${walletType}): ${address}`);
     
-    switch (walletType) {
-      case 'solana':
-        await this.updateSolanaWallet(walletId, address, prices.sol, prices.usdc);
-        break;
-      case 'ethereum':
-        await this.updateEthereumWallet(walletId, address, prices.eth, prices.usdc);
-        break;
-      case 'bitcoin':
-        await this.updateBitcoinWallet(walletId, address, prices.btc);
-        break;
-      default:
-        console.error(`[WalletIntegrationService] Unsupported wallet type: ${walletType}`);
+    try {
+      if (walletType === 'solana') {
+        return await this.updateSolanaWallet(walletId, address, prices);
+      } else if (walletType === 'ethereum') {
+        return await this.updateEthereumWallet(walletId, address, prices);
+      } else if (walletType === 'bitcoin') {
+        return await this.updateBitcoinWallet(walletId, address, prices);
+      } else if (walletType === 'monero') {
+        // For Monero wallets, we don't auto-update balances since they're manually set
+        // Just refresh price for existing Monero assets
+        return await this.refreshMoneroWallet(walletId, prices);
+      } else {
+        throw new Error(`Unsupported wallet type: ${walletType}`);
+      }
+    } catch (error) {
+      console.error(`[WalletIntegrationService] Error updating wallet ${walletId}:`, error);
+      throw error;
     }
-    
-    console.log(`[WalletIntegrationService] Finished updating ${walletType} wallet ${walletId}`);
   }
   
   // Update Solana wallet
-  private async updateSolanaWallet(walletId: number, address: string, solPrice: number | null | undefined, usdcPrice: number | null | undefined) {
+  private async updateSolanaWallet(walletId: number, address: string, prices: {[key: string]: number}) {
     try {
       // Get SOL balance
       const solBalance = await this.solanaIntegration.getSolBalance(address);
-      await this.assetService.updateAssetBalance(walletId, 'SOL', 'Solana', solBalance, solPrice ?? 0);
+      await this.assetService.updateAssetBalance(walletId, 'SOL', 'Solana', solBalance, prices['sol'] ?? 0);
       
       // Get USDC balance
       const usdcBalance = await this.solanaIntegration.getUsdcBalance(address);
-      await this.assetService.updateAssetBalance(walletId, 'USDC', 'USD Coin (Solana)', usdcBalance, usdcPrice ?? 1);
+      await this.assetService.updateAssetBalance(walletId, 'USDC', 'USD Coin (Solana)', usdcBalance, prices['usdc'] ?? 1);
     } catch (error) {
       console.error(`[WalletIntegrationService] Error updating Solana wallet:`, error);
     }
   }
   
   // Update Ethereum wallet
-  private async updateEthereumWallet(walletId: number, address: string, ethPrice: number | null | undefined, usdcPrice: number | null | undefined) {
+  private async updateEthereumWallet(walletId: number, address: string, prices: {[key: string]: number}) {
     try {
       // Get ETH balance
       const ethBalance = await this.ethereumIntegration.getEthBalance(address);
-      await this.assetService.updateAssetBalance(walletId, 'ETH', 'Ethereum', ethBalance, ethPrice ?? 0);
+      await this.assetService.updateAssetBalance(walletId, 'ETH', 'Ethereum', ethBalance, prices['eth'] ?? 0);
       
       // Get USDC balance
       const usdcBalance = await this.ethereumIntegration.getUsdcBalance(address);
-      await this.assetService.updateAssetBalance(walletId, 'USDC', 'USD Coin (ERC20)', usdcBalance, usdcPrice ?? 1);
+      await this.assetService.updateAssetBalance(walletId, 'USDC', 'USD Coin (ERC20)', usdcBalance, prices['usdc'] ?? 1);
     } catch (error) {
       console.error(`[WalletIntegrationService] Error updating Ethereum wallet:`, error);
     }
   }
   
   // Update Bitcoin wallet
-  private async updateBitcoinWallet(walletId: number, address: string, btcPrice: number | null | undefined) {
+  private async updateBitcoinWallet(walletId: number, address: string, prices: {[key: string]: number}) {
     try {
       // Get BTC balance
       const btcBalance = await this.bitcoinIntegration.getBitcoinBalance(address);
-      await this.assetService.updateAssetBalance(walletId, 'BTC', 'Bitcoin', btcBalance, btcPrice ?? 0);
+      await this.assetService.updateAssetBalance(walletId, 'BTC', 'Bitcoin', btcBalance, prices['btc'] ?? 0);
     } catch (error) {
       console.error(`[WalletIntegrationService] Error updating Bitcoin wallet:`, error);
+    }
+  }
+
+  private async refreshMoneroWallet(walletId: number, prices: {[key: string]: number}): Promise<void> {
+    console.log(`[WalletIntegrationService] Refreshing Monero wallet ${walletId} prices`);
+    
+    try {
+      // Get current XMR price if not provided in prices
+      let xmrPrice = prices['monero'] || prices['XMR'] || prices['xmr'];
+      if (!xmrPrice) {
+        xmrPrice = await this.cryptoPrice.getMoneroPrice();
+      }
+      
+      console.log(`[WalletIntegrationService] Got XMR price: $${xmrPrice}`);
+      
+      // Update or create the XMR asset for this specific wallet
+      await this.assetService.updateAssetPriceByWallet(walletId, 'XMR', xmrPrice);
+      console.log(`[WalletIntegrationService] Updated/created XMR asset for wallet ${walletId} with price $${xmrPrice}`);
+    } catch (error) {
+      console.error(`[WalletIntegrationService] Error refreshing Monero wallet ${walletId}:`, error);
+      throw error;
     }
   }
 } 

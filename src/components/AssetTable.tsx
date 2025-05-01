@@ -1,10 +1,29 @@
 'use client';
 
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { trpc } from '@/lib/trpc/client';
+import { CryptoLogo } from './CryptoLogo';
+import {
+  DndContext,
+  closestCenter,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  DragEndEvent,
+} from '@dnd-kit/core';
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  rectSortingStrategy,
+} from '@dnd-kit/sortable';
+import { CSS } from '@dnd-kit/utilities';
 
-interface Asset {
+export interface Asset {
   id: number | string;
+  uniqueId: string;
   walletId: number;
   symbol: string;
   name: string;
@@ -20,73 +39,184 @@ interface Asset {
 interface AssetTableProps {
   assets: Asset[];
   isLoading: boolean;
+  onUpdateMoneroBalance?: (asset: Asset) => void;
+  isMoneroWalletAsset?: (asset: Asset) => boolean;
 }
 
-type SortKey = keyof Asset | 'value';
-type SortDirection = 'ascending' | 'descending';
+function SortableAssetCard({ asset, isDeleting, renderActions, renderChangePercentage }: {
+  asset: Asset;
+  isDeleting: boolean;
+  renderActions: (asset: Asset, isDeleting: boolean, isMergedBtc: boolean) => React.ReactNode;
+  renderChangePercentage: (changePercent?: number) => React.ReactNode;
+}) {
+  const {
+    attributes,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+    isDragging
+  } = useSortable({ id: asset.uniqueId });
 
-interface SortConfig {
-  key: SortKey;
-  direction: SortDirection;
+  const style = {
+    transform: CSS.Transform.toString(transform),
+    transition,
+    zIndex: isDragging ? 10 : undefined,
+    opacity: isDragging ? 0.8 : 1,
+  };
+
+  const balance = parseFloat(asset.balance);
+  const price = parseFloat(asset.price);
+  const value = isNaN(balance) || isNaN(price) ? 0 : balance * price;
+  const isMergedBtc = asset.walletId === -1 && asset.symbol === 'BTC';
+  const dailyChange = asset.changePercent24h;
+
+  return (
+    <div
+      ref={setNodeRef}
+      style={style}
+      {...attributes}
+      {...listeners}
+      className={`relative touch-manipulation overflow-hidden rounded-xl bg-white dark:bg-gray-800 border border-gray-200 dark:border-gray-700 shadow-md hover:shadow-lg transition-shadow duration-300 ${isDragging ? 'cursor-grabbing' : 'cursor-grab'}`}
+    >
+      <div className="relative z-10 p-5">
+        <div className="flex items-start justify-between mb-4">
+          <div className="flex items-center">
+            <CryptoLogo symbol={asset.symbol} size={48} />
+            <div className="ml-3">
+              <div className="text-xl font-bold text-gray-900 dark:text-white">{asset.symbol}</div>
+              <div className="text-sm text-gray-500 dark:text-gray-400">{asset.name}</div>
+            </div>
+          </div>
+          <div className="flex justify-end">
+            {renderChangePercentage(dailyChange)}
+          </div>
+        </div>
+        
+        <div className="mt-4">
+          <div className="text-sm text-gray-500 dark:text-gray-400">Current Value</div>
+          <div className="text-2xl font-bold text-gray-900 dark:text-white">
+            ${value.toLocaleString('en-US', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </div>
+        </div>
+        
+        <div className="grid grid-cols-2 gap-4 mt-5 bg-gray-50 dark:bg-gray-700/50 rounded-lg p-4">
+          <div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">My Balance</div>
+            <div className="text-md font-medium text-gray-900 dark:text-white">
+              {balance.toLocaleString('en-US', {
+                minimumFractionDigits: asset.symbol === 'BTC' || asset.symbol === 'XMR' ? 8 : 2,
+                maximumFractionDigits: asset.symbol === 'BTC' || asset.symbol === 'XMR' ? 8 : 2,
+              })} {asset.symbol}
+            </div>
+          </div>
+          <div>
+            <div className="text-xs text-gray-500 dark:text-gray-400 mb-1">Price</div>
+            <div className="text-md font-medium text-gray-900 dark:text-white">
+              ${price.toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 2,
+              })}
+            </div>
+          </div>
+        </div>
+        
+        {!isMergedBtc && (
+          <div className="mt-4 flex justify-end">
+            {renderActions(asset, isDeleting, isMergedBtc)}
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
-const SortIcon = ({ direction }: { direction: SortDirection }) => {
-  return direction === 'ascending' ? 
-    <span className="ml-1">▲</span> : 
-    <span className="ml-1">▼</span>;
-};
-
-export function AssetTable({ assets, isLoading }: AssetTableProps) {
-  const [sortConfig, setSortConfig] = useState<SortConfig | null>(null);
+export function AssetTable({ assets: assetsProp, isLoading, onUpdateMoneroBalance, isMoneroWalletAsset }: AssetTableProps) {
+  const [orderedIds, setOrderedIds] = useState<string[]>([]);
   const utils = trpc.useUtils();
   const [deletingId, setDeletingId] = useState<number | null>(null);
+  const localStorageKey = 'portfolioAssetOrder_v2';
 
-  const displayedTotalValue = useMemo(() => assets.reduce((sum, asset) => {
-    const balance = parseFloat(asset.balance);
-    const price = parseFloat(asset.price);
-    const value = isNaN(balance) || isNaN(price) ? 0 : balance * price;
-    return sum + value;
-  }, 0), [assets]);
-
-  const sortedAssets = useMemo(() => {
-    const sortableAssets = [...assets];
-    if (sortConfig !== null) {
-      sortableAssets.sort((a, b) => {
-        let aValue: string | number;
-        let bValue: string | number;
-
-        if (sortConfig.key === 'value') {
-          aValue = parseFloat(a.balance) * parseFloat(a.price);
-          bValue = parseFloat(b.balance) * parseFloat(b.price);
-        } else if (sortConfig.key === 'balance' || sortConfig.key === 'price') {
-          aValue = parseFloat(a[sortConfig.key]);
-          bValue = parseFloat(b[sortConfig.key]);
-        } else if (sortConfig.key === 'dailyChange' || sortConfig.key === 'weeklyChange' || sortConfig.key === 'monthlyChange') {
-            aValue = a[sortConfig.key] ?? -Infinity;
-            bValue = b[sortConfig.key] ?? -Infinity;
-        } else {
-          aValue = a[sortConfig.key as keyof Asset]?.toString().toLowerCase() || '';
-          bValue = b[sortConfig.key as keyof Asset]?.toString().toLowerCase() || '';
+  useEffect(() => {
+    const savedOrder = localStorage.getItem(localStorageKey);
+    if (savedOrder) {
+      try {
+        const parsedOrder = JSON.parse(savedOrder);
+        if (Array.isArray(parsedOrder)) {
+          setOrderedIds(parsedOrder);
         }
+      } catch (e) {
+        console.error("Failed to parse saved order v2 from localStorage", e);
+        localStorage.removeItem(localStorageKey);
+      }
+    }
+  }, []);
 
-        if (aValue < bValue) {
-          return sortConfig.direction === 'ascending' ? -1 : 1;
-        }
-        if (aValue > bValue) {
-          return sortConfig.direction === 'ascending' ? 1 : -1;
-        }
-        return 0;
+  useEffect(() => {
+    if (!assetsProp || assetsProp.length === 0) {
+        setOrderedIds([]);
+        return;
+    }
+
+    const currentIds = assetsProp.map(a => a.uniqueId);
+    const existingOrder = orderedIds.length > 0 ? orderedIds : currentIds;
+    
+    const validOrderedIds = existingOrder.filter(id => 
+        currentIds.includes(id)
+    );
+
+    const newIds = currentIds.filter(id => 
+        !validOrderedIds.includes(id)
+    );
+
+    const finalOrder = [...validOrderedIds, ...newIds];
+    
+    if (JSON.stringify(finalOrder) !== JSON.stringify(orderedIds)) {
+        setOrderedIds(finalOrder);
+    }
+
+  }, [assetsProp]);
+
+  useEffect(() => {
+    if (orderedIds.length > 0) {
+      localStorage.setItem(localStorageKey, JSON.stringify(orderedIds));
+    } else {
+      localStorage.removeItem(localStorageKey);
+    }
+  }, [orderedIds]);
+
+  const displayedAssets = useMemo(() => {
+    if (!assetsProp || assetsProp.length === 0) return [];
+    
+    const assetMap = new Map(assetsProp.map(asset => [asset.uniqueId, asset]));
+    
+    return orderedIds
+        .map(id => assetMap.get(id))
+        .filter((asset): asset is Asset => asset !== undefined);
+  }, [assetsProp, orderedIds]);
+
+  const sensors = useSensors(
+    useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    })
+  );
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (over && active.id !== over.id) {
+      setOrderedIds((items) => {
+        const oldIndex = items.indexOf(active.id as string);
+        const newIndex = items.indexOf(over.id as string);
+        if (oldIndex === -1 || newIndex === -1) return items;
+        const newOrder = arrayMove(items, oldIndex, newIndex);
+        localStorage.setItem(localStorageKey, JSON.stringify(newOrder)); 
+        return newOrder;
       });
     }
-    return sortableAssets;
-  }, [assets, sortConfig]);
-
-  const requestSort = (key: SortKey) => {
-    let direction: SortDirection = 'ascending';
-    if (sortConfig && sortConfig.key === key && sortConfig.direction === 'ascending') {
-      direction = 'descending';
-    }
-    setSortConfig({ key, direction });
   };
 
   const deleteWalletMutation = trpc.wallet.delete.useMutation({
@@ -115,211 +245,129 @@ export function AssetTable({ assets, isLoading }: AssetTableProps) {
 
   if (isLoading) {
     return (
-      <div className="animate-pulse">
-        <div className="h-12 bg-gray-200 dark:bg-gray-700 rounded-md mb-2"></div>
-        {[...Array(3)].map((_, index) => (
-          <div key={index} className="h-16 bg-gray-200 dark:bg-gray-700 rounded-md mb-2"></div>
-        ))}
+      <div className="animate-pulse space-y-4">
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          {[...Array(6)].map((_, index) => (
+            <div key={index} className="rounded-xl overflow-hidden">
+              <div className="bg-gray-200 dark:bg-gray-700 h-48"></div>
+            </div>
+          ))}
+        </div>
       </div>
     );
   }
 
-  if (assets.length === 0) {
+  if (assetsProp.length === 0) {
     return (
-      <div className="text-center py-6 text-gray-500 dark:text-gray-400">
-        No assets found.
+      <div className="text-center py-12 px-4 rounded-xl bg-gray-50 dark:bg-gray-800">
+        <div className="text-6xl mb-4">🔍</div>
+        <h3 className="text-2xl font-bold mb-2">No assets found</h3>
+        <p className="text-gray-500 dark:text-gray-400">
+          Add a wallet to start tracking your crypto!
+        </p>
       </div>
     );
   }
 
   const renderChangePercentage = (changePercent?: number) => {
-    if (changePercent === undefined || changePercent === null) return <span className="text-gray-400">-</span>;
+    if (changePercent === undefined || changePercent === null) {
+      return <span className="text-gray-400">-</span>;
+    }
     
-    const isPositive = changePercent >= 0;
+    let bgClass: string;
+    let textClass: string;
+    let arrow: string | null = null;
+    let sign = '';
+
+    if (changePercent > 0.1) {
+      // Positive change
+      bgClass = 'bg-green-100 dark:bg-green-900/30';
+      textClass = 'text-green-600 dark:text-green-400';
+      arrow = '↗';
+      sign = '+';
+    } else if (changePercent < -0.1) {
+      // Negative change
+      bgClass = 'bg-red-100 dark:bg-red-900/30';
+      textClass = 'text-red-600 dark:text-red-400';
+      arrow = '↘';
+      // Negative sign is already part of the number
+    } else {
+      // Neutral change (-0.1 to +0.1)
+      bgClass = 'bg-gray-100 dark:bg-gray-700/50';
+      textClass = 'text-gray-600 dark:text-gray-400';
+      arrow = null; // No arrow for neutral
+      // Show plus sign for 0.00 to 0.10
+      if (changePercent >= 0) {
+        sign = '+';
+      } 
+    }
+    
     return (
-      <span 
-        className={isPositive ? 'text-green-500' : 'text-red-500'}
-      >
-        {isPositive ? '+' : ''}{changePercent.toFixed(2)}%
-      </span>
+      <div className={`inline-flex items-center rounded-full px-3 py-1 ${bgClass}`}>
+        <span className={`text-sm font-medium ${textClass}`}>
+          {arrow && <span className="mr-1">{arrow}</span>}
+          {sign}{changePercent.toFixed(2)}%
+        </span>
+      </div>
     );
   };
   
-  const renderSortableHeader = (key: SortKey, label: string, className: string = '') => (
-    <button 
-      type="button"
-      onClick={() => requestSort(key)}
-      className={`flex items-center justify-end text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider hover:text-gray-700 dark:hover:text-gray-300 ${className}`}
-    >
-      {label}
-      {sortConfig?.key === key && <SortIcon direction={sortConfig.direction} />}
-    </button>
-  );
-  
-  return (
-    <div className="overflow-x-auto">
-      <div className="grid grid-cols-1 gap-3">
-        <div className="bg-gray-50 dark:bg-gray-800 rounded-md p-3 hidden md:grid md:grid-cols-13 gap-2">
-          <div className="col-span-3 text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-            <button 
-                type="button"
-                onClick={() => requestSort('symbol')}
-                className={`flex items-center text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider hover:text-gray-700 dark:hover:text-gray-300`}
-            >
-                Asset
-                {sortConfig?.key === 'symbol' && <SortIcon direction={sortConfig.direction} />}
-            </button>
-          </div>
-          <div className="col-span-2 flex justify-end">
-              {renderSortableHeader('balance', 'Balance')}
-          </div>
-          <div className="col-span-2 flex justify-end">
-              {renderSortableHeader('price', 'Price')}
-          </div>
-          <div className="col-span-1 flex justify-end">
-              {renderSortableHeader('dailyChange', '24h %')}
-          </div>
-          <div className="col-span-1 flex justify-end">
-              {renderSortableHeader('weeklyChange', '7d %')}
-          </div>
-          <div className="col-span-1 flex justify-end">
-              {renderSortableHeader('monthlyChange', '30d %')}
-          </div>
-          <div className="col-span-2 flex justify-end">
-              {renderSortableHeader('value', 'Value')}
-          </div>
-          <div className="col-span-1 flex justify-end text-xs font-medium text-gray-500 dark:text-gray-400 uppercase tracking-wider">
-             Actions
-          </div>
-        </div>
-        
-        {sortedAssets.map((asset) => {
-          const balance = parseFloat(asset.balance);
-          const price = parseFloat(asset.price);
-          const value = isNaN(balance) || isNaN(price) ? 0 : balance * price;
-          const isDeleting = deletingId === asset.walletId;
-          const isMergedBtc = asset.walletId === -1 && asset.symbol === 'BTC';
-          
-          const dailyChange = asset.changePercent24h;
-
-          return (
-            <div 
-              key={`${asset.walletId}-${asset.symbol}-${asset.id}`}
-              className="border border-gray-200 dark:border-gray-700 rounded-lg p-3 mb-2"
-            >
-              <div className="md:hidden">
-                <div className="flex justify-between items-center">
-                  <div className="flex items-center">
-                    <div>
-                      <div className="text-lg font-medium">{asset.symbol}</div>
-                      <div className="text-sm text-gray-500 dark:text-gray-400">{asset.name}</div>
-                    </div>
-                  </div>
-                  <div className="text-right text-lg font-medium">
-                    ${value.toLocaleString('en-US', {
-                      minimumFractionDigits: 2,
-                      maximumFractionDigits: 2,
-                    })}
-                  </div>
-                </div>
-                
-                <div className="grid grid-cols-3 gap-2 mt-3 border-t border-gray-100 dark:border-gray-800 pt-3">
-                  <div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400">Balance</div>
-                    <div className="text-sm">
-                      {balance.toLocaleString('en-US', {
-                        minimumFractionDigits: asset.symbol === 'BTC' ? 8 : 2,
-                        maximumFractionDigits: asset.symbol === 'BTC' ? 8 : 2,
-                      })} {asset.symbol}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400">Price</div>
-                    <div className="text-sm">
-                      ${price.toLocaleString('en-US', {
-                        minimumFractionDigits: 2,
-                        maximumFractionDigits: 2,
-                      })}
-                    </div>
-                  </div>
-                  <div>
-                    <div className="text-xs text-gray-500 dark:text-gray-400">24h %</div>
-                    <div className="text-sm">
-                      {renderChangePercentage(dailyChange)}
-                    </div>
-                  </div>
-                </div>
-                {!isMergedBtc && (
-                  <div className="mt-3 border-t border-gray-100 dark:border-gray-800 pt-3 flex justify-end">
-                    <button
-                      onClick={() => handleDelete(asset.walletId)}
-                      disabled={isDeleting}
-                      className="text-red-500 hover:text-red-700 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {isDeleting ? 'Deleting...' : 'Delete Wallet'}
-                    </button>
-                  </div>
-                )}
-              </div>
-              
-              <div className="hidden md:grid md:grid-cols-13 gap-2 items-center">
-                <div className="col-span-3">
-                  <div className="text-md font-medium">{asset.symbol}</div>
-                  <div className="text-xs text-gray-500 dark:text-gray-400">{asset.name}</div>
-                </div>
-                <div className="col-span-2 text-right text-sm">
-                  {balance.toLocaleString('en-US', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: asset.symbol === 'BTC' ? 8 : 2,
-                  })} {asset.symbol}
-                </div>
-                <div className="col-span-2 text-right text-sm">
-                  ${price.toLocaleString('en-US', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}
-                </div>
-                <div className="col-span-1 text-right text-sm">
-                  {renderChangePercentage(dailyChange)}
-                </div>
-                <div className="col-span-1 text-right text-sm">
-                  {renderChangePercentage(asset.weeklyChange)}
-                </div>
-                <div className="col-span-1 text-right text-sm">
-                  {renderChangePercentage(asset.monthlyChange)}
-                </div>
-                <div className="col-span-2 text-right text-sm font-medium">
-                  ${value.toLocaleString('en-US', {
-                    minimumFractionDigits: 2,
-                    maximumFractionDigits: 2,
-                  })}
-                </div>
-                <div className="col-span-1 flex justify-end">
-                  {!isMergedBtc && (
-                    <button
-                      onClick={() => handleDelete(asset.walletId)}
-                      disabled={isDeleting}
-                      className="text-red-500 hover:text-red-700 text-xs disabled:opacity-50 disabled:cursor-not-allowed"
-                    >
-                      {isDeleting ? 'Deleting...' : 'Delete'}
-                    </button>
-                  )}
-                </div>
-              </div>
-            </div>
-          );
-        })}
-        
-        <div className="border-t border-gray-200 dark:border-gray-700 p-3 flex justify-between items-center">
-          <div className="text-sm font-bold">Total</div>
-          <div className="text-lg font-bold">
-            ${displayedTotalValue.toLocaleString('en-US', {
-              minimumFractionDigits: 2,
-              maximumFractionDigits: 2,
-            })}
-          </div>
-        </div>
+  const renderActions = (asset: Asset, isDeleting: boolean, isMergedBtc: boolean) => {
+    if (isMergedBtc) return null;
+    
+    const isMonero = isMoneroWalletAsset && isMoneroWalletAsset(asset);
+    
+    return (
+      <div className="flex space-x-2">
+        {isMonero && onUpdateMoneroBalance && (
+          <button
+            onClick={() => onUpdateMoneroBalance(asset)}
+            className="inline-flex items-center rounded-full bg-blue-100 dark:bg-blue-900/30 px-3 py-1 text-sm font-medium text-blue-600 dark:text-blue-400 transition-transform hover:scale-105"
+          >
+            <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z" />
+            </svg>
+            Update Balance
+          </button>
+        )}
+        <button
+          onClick={() => handleDelete(asset.walletId)}
+          disabled={isDeleting}
+          className="inline-flex items-center rounded-full bg-red-100 dark:bg-red-900/30 px-3 py-1 text-sm font-medium text-red-600 dark:text-red-400 transition-transform hover:scale-105 disabled:opacity-50 disabled:cursor-not-allowed"
+        >
+          <svg className="w-4 h-4 mr-1" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+          </svg>
+          {isDeleting ? 'Deleting...' : 'Delete'}
+        </button>
       </div>
-    </div>
+    );
+  };
+
+  return (
+    <DndContext
+      sensors={sensors}
+      collisionDetection={closestCenter}
+      onDragEnd={handleDragEnd}
+    >
+      <SortableContext
+        items={orderedIds}
+        strategy={rectSortingStrategy}
+      >
+        <div className="space-y-6">
+          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+            {displayedAssets.map((asset) => (
+              <SortableAssetCard
+                key={asset.uniqueId}
+                asset={asset}
+                isDeleting={asset.walletId !== -1 && deletingId === asset.walletId}
+                renderActions={renderActions}
+                renderChangePercentage={renderChangePercentage}
+              />
+            ))}
+          </div>
+        </div>
+      </SortableContext>
+    </DndContext>
   );
 } 

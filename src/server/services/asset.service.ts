@@ -34,6 +34,32 @@ export class AssetService {
     return { success: true };
   }
 
+  // Add method to update price for a specific wallet's asset
+  async updateAssetPriceByWallet(walletId: number, symbol: string, price: number) {
+    const priceString = price.toString();
+    
+    // Find the asset for this wallet
+    const existingAssets = await db.select().from(assets).where(
+      and(eq(assets.walletId, walletId), eq(assets.symbol, symbol))
+    );
+    
+    if (existingAssets.length > 0) {
+      // Update the specific asset
+      await db.update(assets)
+        .set({ 
+          price: priceString,
+          lastUpdated: new Date()
+        })
+        .where(and(eq(assets.walletId, walletId), eq(assets.symbol, symbol)));
+      
+      return { success: true };
+    } else {
+      // If the asset doesn't exist yet, create it
+      await this.updateAssetBalance(walletId, symbol, symbol, 0, price);
+      return { success: true };
+    }
+  }
+
   async updateAssetBalance(walletId: number, symbol: string, name: string | null, balance: number, price: number | null) {
     // Find existing asset
     const existingAssets = await db.select().from(assets).where(and(eq(assets.walletId, walletId), eq(assets.symbol, symbol)));

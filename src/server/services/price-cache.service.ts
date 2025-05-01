@@ -5,6 +5,7 @@ interface CachedPrices {
     eth: number | null;
     sol: number | null;
     usdc: number | null;
+    xmr: number | null;
     lastUpdated: Date | null;
 }
 
@@ -14,6 +15,7 @@ let priceCache: CachedPrices = {
     eth: null,
     sol: null,
     usdc: null,
+    xmr: null,
     lastUpdated: null,
 };
 
@@ -38,11 +40,12 @@ export class PriceCacheService {
         isUpdating = true;
         console.log('[PriceCacheService] Starting price cache update...');
         try {
-            const [btcPrice, ethPrice, solPrice, usdcPrice] = await Promise.all([
+            const [btcPrice, ethPrice, solPrice, usdcPrice, xmrPrice] = await Promise.all([
                 this.priceIntegration.getBitcoinPrice(),
                 this.priceIntegration.getEthereumPrice(),
                 this.priceIntegration.getSolanaPrice(),
-                this.priceIntegration.getUsdcPrice()
+                this.priceIntegration.getUsdcPrice(),
+                this.priceIntegration.getMoneroPrice()
             ]);
             
             priceCache = {
@@ -50,6 +53,7 @@ export class PriceCacheService {
                 eth: ethPrice,
                 sol: solPrice,
                 usdc: usdcPrice,
+                xmr: xmrPrice,
                 lastUpdated: new Date()
             };
             console.log('[PriceCacheService] Price cache updated successfully');

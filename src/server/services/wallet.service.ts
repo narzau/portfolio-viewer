@@ -49,15 +49,24 @@ export class WalletService {
     
     try {
       // Get the latest prices
-      const prices = this.priceCacheService.getPrices();
-      console.log(`[WalletService] Fetched prices for update:`, prices);
+      const cachedPrices = this.priceCacheService.getPrices();
+      console.log(`[WalletService] Fetched prices for update:`, cachedPrices);
+      
+      // Convert cached prices to non-nullable format
+      const validPrices: {[key: string]: number} = {
+        btc: cachedPrices.btc ?? 0,
+        eth: cachedPrices.eth ?? 0,
+        sol: cachedPrices.sol ?? 0,
+        usdc: cachedPrices.usdc ?? 1,
+        xmr: cachedPrices.xmr ?? 0
+      };
       
       // Immediately update balances
       await this.walletIntegrationService.updateWalletBalances(
         newWallet.id,
         newWallet.type,
         newWallet.address,
-        prices
+        validPrices
       );
       
       console.log(`[WalletService] Successfully updated balances for wallet ${newWallet.id}`);

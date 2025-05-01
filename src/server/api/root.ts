@@ -7,4 +7,4 @@ export const appRouter = router({
   asset: assetRouter,
 });
 
-export type AppRouter = typeof appRouter; 
+export type AppRouter = typeof appRouter;

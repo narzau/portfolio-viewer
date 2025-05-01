@@ -37,7 +37,8 @@ export interface Asset {
 }
 
 interface AssetTableProps {
-  assets: Asset[];
+  stableAssets: Asset[];
+  cryptoAssets: Asset[];
   isLoading: boolean;
   onUpdateMoneroBalance?: (asset: Asset) => void;
   isMoneroWalletAsset?: (asset: Asset) => boolean;
@@ -46,7 +47,7 @@ interface AssetTableProps {
 function SortableAssetCard({ asset, isDeleting, renderActions, renderChangePercentage }: {
   asset: Asset;
   isDeleting: boolean;
-  renderActions: (asset: Asset, isDeleting: boolean, isMergedBtc: boolean) => React.ReactNode;
+  renderActions: (asset: Asset, isDeleting: boolean) => React.ReactNode;
   renderChangePercentage: (changePercent?: number) => React.ReactNode;
 }) {
   const {
@@ -56,7 +57,7 @@ function SortableAssetCard({ asset, isDeleting, renderActions, renderChangePerce
     transform,
     transition,
     isDragging
-  } = useSortable({ id: asset.uniqueId });
+  } = useSortable({ id: asset.uniqueId, data: { type: asset.symbol === 'USDC' ? 'stable' : 'crypto' } });
 
   const style = {
     transform: CSS.Transform.toString(transform),
@@ -69,6 +70,7 @@ function SortableAssetCard({ asset, isDeleting, renderActions, renderChangePerce
   const price = parseFloat(asset.price);
   const value = isNaN(balance) || isNaN(price) ? 0 : balance * price;
   const isMergedBtc = asset.walletId === -1 && asset.symbol === 'BTC';
+  const isVirtualGains = asset.walletId === -2 && asset.symbol === 'USD';
   const dailyChange = asset.changePercent24h;
 
   return (
@@ -124,9 +126,9 @@ function SortableAssetCard({ asset, isDeleting, renderActions, renderChangePerce
           </div>
         </div>
         
-        {!isMergedBtc && (
+        {!isMergedBtc && !isVirtualGains && (
           <div className="mt-4 flex justify-end">
-            {renderActions(asset, isDeleting, isMergedBtc)}
+            {renderActions(asset, isDeleting)}
           </div>
         )}
       </div>
@@ -134,86 +136,173 @@ function SortableAssetCard({ asset, isDeleting, renderActions, renderChangePerce
   );
 }
 
-export function AssetTable({ assets: assetsProp, isLoading, onUpdateMoneroBalance, isMoneroWalletAsset }: AssetTableProps) {
-  const [orderedIds, setOrderedIds] = useState<string[]>([]);
+// Define Sort Order Type
+type SortOrder = 'manual' | 'valueDesc' | 'valueAsc';
+
+export function AssetTable({ stableAssets, cryptoAssets, isLoading, onUpdateMoneroBalance, isMoneroWalletAsset }: AssetTableProps) {
+  // State for ordered IDs (manual drag-and-drop order)
+  const [stableOrderedIds, setStableOrderedIds] = useState<string[]>([]);
+  const [cryptoOrderedIds, setCryptoOrderedIds] = useState<string[]>([]);
+  
+  // State for current sort order
+  const [stableSortOrder, setStableSortOrder] = useState<SortOrder>('manual');
+  const [cryptoSortOrder, setCryptoSortOrder] = useState<SortOrder>('manual');
+  
   const utils = trpc.useUtils();
   const [deletingId, setDeletingId] = useState<number | null>(null);
-  const localStorageKey = 'portfolioAssetOrder_v2';
+  const stableLocalStorageKey = 'portfolioStableAssetOrder_v1';
+  const cryptoLocalStorageKey = 'portfolioCryptoAssetOrder_v1';
 
   useEffect(() => {
-    const savedOrder = localStorage.getItem(localStorageKey);
+    const savedOrder = localStorage.getItem(stableLocalStorageKey);
     if (savedOrder) {
       try {
         const parsedOrder = JSON.parse(savedOrder);
         if (Array.isArray(parsedOrder)) {
-          setOrderedIds(parsedOrder);
+          setStableOrderedIds(parsedOrder);
         }
       } catch (e) {
-        console.error("Failed to parse saved order v2 from localStorage", e);
-        localStorage.removeItem(localStorageKey);
+        console.error("Failed to parse saved stable order v1 from localStorage", e);
+        localStorage.removeItem(stableLocalStorageKey);
       }
     }
   }, []);
 
   useEffect(() => {
-    if (!assetsProp || assetsProp.length === 0) {
-        setOrderedIds([]);
-        return;
+    const savedOrder = localStorage.getItem(cryptoLocalStorageKey);
+    if (savedOrder) {
+      try {
+        const parsedOrder = JSON.parse(savedOrder);
+        if (Array.isArray(parsedOrder)) {
+          setCryptoOrderedIds(parsedOrder);
+        }
+      } catch (e) {
+        console.error("Failed to parse saved crypto order v1 from localStorage", e);
+        localStorage.removeItem(cryptoLocalStorageKey);
+      }
     }
-
-    const currentIds = assetsProp.map(a => a.uniqueId);
-    const existingOrder = orderedIds.length > 0 ? orderedIds : currentIds;
-    
-    const validOrderedIds = existingOrder.filter(id => 
-        currentIds.includes(id)
-    );
-
-    const newIds = currentIds.filter(id => 
-        !validOrderedIds.includes(id)
-    );
-
-    const finalOrder = [...validOrderedIds, ...newIds];
-    
-    if (JSON.stringify(finalOrder) !== JSON.stringify(orderedIds)) {
-        setOrderedIds(finalOrder);
-    }
-
-  }, [assetsProp]);
+  }, []);
 
   useEffect(() => {
-    if (orderedIds.length > 0) {
-      localStorage.setItem(localStorageKey, JSON.stringify(orderedIds));
-    } else {
-      localStorage.removeItem(localStorageKey);
+    if (!stableAssets) return;
+    const currentIds = stableAssets.map(a => a.uniqueId);
+    const existingOrder = stableOrderedIds.length > 0 ? stableOrderedIds : currentIds;
+    const validOrderedIds = existingOrder.filter(id => currentIds.includes(id));
+    const newIds = currentIds.filter(id => !validOrderedIds.includes(id));
+    const finalOrder = [...validOrderedIds, ...newIds];
+    if (JSON.stringify(finalOrder) !== JSON.stringify(stableOrderedIds)) {
+      setStableOrderedIds(finalOrder);
     }
-  }, [orderedIds]);
+  }, [stableAssets]);
 
-  const displayedAssets = useMemo(() => {
-    if (!assetsProp || assetsProp.length === 0) return [];
-    
-    const assetMap = new Map(assetsProp.map(asset => [asset.uniqueId, asset]));
-    
-    return orderedIds
-        .map(id => assetMap.get(id))
-        .filter((asset): asset is Asset => asset !== undefined);
-  }, [assetsProp, orderedIds]);
+  useEffect(() => {
+    if (!cryptoAssets) return;
+    const currentIds = cryptoAssets.map(a => a.uniqueId);
+    const existingOrder = cryptoOrderedIds.length > 0 ? cryptoOrderedIds : currentIds;
+    const validOrderedIds = existingOrder.filter(id => currentIds.includes(id));
+    const newIds = currentIds.filter(id => !validOrderedIds.includes(id));
+    const finalOrder = [...validOrderedIds, ...newIds];
+    if (JSON.stringify(finalOrder) !== JSON.stringify(cryptoOrderedIds)) {
+      setCryptoOrderedIds(finalOrder);
+    }
+  }, [cryptoAssets]);
+
+  useEffect(() => {
+    if (stableOrderedIds.length > 0) {
+      localStorage.setItem(stableLocalStorageKey, JSON.stringify(stableOrderedIds));
+    } else if (localStorage.getItem(stableLocalStorageKey)) {
+      localStorage.removeItem(stableLocalStorageKey);
+    }
+  }, [stableOrderedIds]);
+
+  useEffect(() => {
+    if (cryptoOrderedIds.length > 0) {
+      localStorage.setItem(cryptoLocalStorageKey, JSON.stringify(cryptoOrderedIds));
+    } else if (localStorage.getItem(cryptoLocalStorageKey)) {
+      localStorage.removeItem(cryptoLocalStorageKey);
+    }
+  }, [cryptoOrderedIds]);
+
+  // Memoize assets based on manual order first
+  const manuallyOrderedStableAssets = useMemo(() => {
+    if (!stableAssets || stableAssets.length === 0) return [];
+    const assetMap = new Map(stableAssets.map(asset => [asset.uniqueId, asset]));
+    return stableOrderedIds.map(id => assetMap.get(id)).filter((asset): asset is Asset => asset !== undefined);
+  }, [stableAssets, stableOrderedIds]);
+
+  const manuallyOrderedCryptoAssets = useMemo(() => {
+    if (!cryptoAssets || cryptoAssets.length === 0) return [];
+    const assetMap = new Map(cryptoAssets.map(asset => [asset.uniqueId, asset]));
+    return cryptoOrderedIds.map(id => assetMap.get(id)).filter((asset): asset is Asset => asset !== undefined);
+  }, [cryptoAssets, cryptoOrderedIds]);
+
+  // Apply sorting based on the current sort order state
+  const displayedStableAssets = useMemo(() => {
+    const assetsToSort = [...manuallyOrderedStableAssets]; // Clone to avoid mutating
+    if (stableSortOrder === 'valueDesc') {
+      return assetsToSort.sort((a, b) => {
+        const valueA = parseFloat(a.balance) * parseFloat(a.price);
+        const valueB = parseFloat(b.balance) * parseFloat(b.price);
+        return (isNaN(valueB) ? 0 : valueB) - (isNaN(valueA) ? 0 : valueA); // Descending
+      });
+    } else if (stableSortOrder === 'valueAsc') {
+      return assetsToSort.sort((a, b) => {
+        const valueA = parseFloat(a.balance) * parseFloat(a.price);
+        const valueB = parseFloat(b.balance) * parseFloat(b.price);
+        return (isNaN(valueA) ? 0 : valueA) - (isNaN(valueB) ? 0 : valueB); // Ascending
+      });
+    } 
+    return manuallyOrderedStableAssets; // Default: manual order
+  }, [manuallyOrderedStableAssets, stableSortOrder]);
+
+  const displayedCryptoAssets = useMemo(() => {
+    const assetsToSort = [...manuallyOrderedCryptoAssets]; // Clone to avoid mutating
+     if (cryptoSortOrder === 'valueDesc') {
+      return assetsToSort.sort((a, b) => {
+        const valueA = parseFloat(a.balance) * parseFloat(a.price);
+        const valueB = parseFloat(b.balance) * parseFloat(b.price);
+        return (isNaN(valueB) ? 0 : valueB) - (isNaN(valueA) ? 0 : valueA); // Descending
+      });
+    } else if (cryptoSortOrder === 'valueAsc') {
+      return assetsToSort.sort((a, b) => {
+        const valueA = parseFloat(a.balance) * parseFloat(a.price);
+        const valueB = parseFloat(b.balance) * parseFloat(b.price);
+        return (isNaN(valueA) ? 0 : valueA) - (isNaN(valueB) ? 0 : valueB); // Ascending
+      });
+    }
+    return manuallyOrderedCryptoAssets; // Default: manual order
+  }, [manuallyOrderedCryptoAssets, cryptoSortOrder]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, { activationConstraint: { distance: 5 } }),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
   );
 
   const handleDragEnd = (event: DragEndEvent) => {
     const { active, over } = event;
-    if (over && active.id !== over.id) {
-      setOrderedIds((items) => {
-        const oldIndex = items.indexOf(active.id as string);
-        const newIndex = items.indexOf(over.id as string);
+    
+    if (!over || !active.data.current?.type) return;
+
+    const activeType = active.data.current.type;
+    const overId = over.id as string;
+    const activeId = active.id as string;
+
+    if (activeId === overId) return;
+
+    if (activeType === 'stable') {
+      setStableOrderedIds((items) => {
+        const oldIndex = items.indexOf(activeId);
+        const newIndex = items.indexOf(overId);
         if (oldIndex === -1 || newIndex === -1) return items;
         const newOrder = arrayMove(items, oldIndex, newIndex);
-        localStorage.setItem(localStorageKey, JSON.stringify(newOrder)); 
+        return newOrder;
+      });
+    } else if (activeType === 'crypto') {
+      setCryptoOrderedIds((items) => {
+        const oldIndex = items.indexOf(activeId);
+        const newIndex = items.indexOf(overId);
+        if (oldIndex === -1 || newIndex === -1) return items;
+        const newOrder = arrayMove(items, oldIndex, newIndex);
         return newOrder;
       });
     }
@@ -246,9 +335,18 @@ export function AssetTable({ assets: assetsProp, isLoading, onUpdateMoneroBalanc
   if (isLoading) {
     return (
       <div className="animate-pulse space-y-4">
+        <div className="h-8 w-48 bg-gray-200 dark:bg-gray-700 rounded mb-4"></div>
         <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-          {[...Array(6)].map((_, index) => (
+          {[...Array(3)].map((_, index) => (
             <div key={index} className="rounded-xl overflow-hidden">
+              <div className="bg-gray-200 dark:bg-gray-700 h-48"></div>
+            </div>
+          ))}
+        </div>
+        <div className="h-8 w-48 bg-gray-200 dark:bg-gray-700 rounded my-4"></div>
+        <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+          {[...Array(3)].map((_, index) => (
+            <div key={index + 3} className="rounded-xl overflow-hidden">
               <div className="bg-gray-200 dark:bg-gray-700 h-48"></div>
             </div>
           ))}
@@ -257,7 +355,7 @@ export function AssetTable({ assets: assetsProp, isLoading, onUpdateMoneroBalanc
     );
   }
 
-  if (assetsProp.length === 0) {
+  if (stableAssets.length === 0 && cryptoAssets.length === 0) {
     return (
       <div className="text-center py-12 px-4 rounded-xl bg-gray-50 dark:bg-gray-800">
         <div className="text-6xl mb-4">🔍</div>
@@ -312,9 +410,7 @@ export function AssetTable({ assets: assetsProp, isLoading, onUpdateMoneroBalanc
     );
   };
   
-  const renderActions = (asset: Asset, isDeleting: boolean, isMergedBtc: boolean) => {
-    if (isMergedBtc) return null;
-    
+  const renderActions = (asset: Asset, isDeleting: boolean) => {
     const isMonero = isMoneroWalletAsset && isMoneroWalletAsset(asset);
     
     return (
@@ -344,30 +440,93 @@ export function AssetTable({ assets: assetsProp, isLoading, onUpdateMoneroBalanc
     );
   };
 
+  // Function to cycle through sort orders
+  const cycleSortOrder = (currentOrder: SortOrder, setOrder: React.Dispatch<React.SetStateAction<SortOrder>>) => {
+    if (currentOrder === 'manual') setOrder('valueDesc');
+    else if (currentOrder === 'valueDesc') setOrder('valueAsc');
+    else setOrder('manual');
+  };
+
+  // Function to get button text/icon for sort state
+  const getSortButtonContent = (order: SortOrder) => {
+    if (order === 'valueDesc') return 'Value ↓';
+    if (order === 'valueAsc') return 'Value ↑';
+    return 'Manual Order'; // Or just an icon like ↕️
+  };
+
   return (
     <DndContext
       sensors={sensors}
       collisionDetection={closestCenter}
       onDragEnd={handleDragEnd}
     >
-      <SortableContext
-        items={orderedIds}
-        strategy={rectSortingStrategy}
-      >
-        <div className="space-y-6">
-          <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
-            {displayedAssets.map((asset) => (
-              <SortableAssetCard
-                key={asset.uniqueId}
-                asset={asset}
-                isDeleting={asset.walletId !== -1 && deletingId === asset.walletId}
-                renderActions={renderActions}
-                renderChangePercentage={renderChangePercentage}
-              />
-            ))}
-          </div>
-        </div>
-      </SortableContext>
+      <div className="space-y-8"> 
+        {/* --- Stable Assets Section --- */}
+        {stableAssets.length > 0 && (
+          <section>
+            <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-200 dark:border-gray-700">
+              <h2 className="text-2xl font-semibold">Stable Assets</h2>
+              <button 
+                onClick={() => cycleSortOrder(stableSortOrder, setStableSortOrder)}
+                className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${stableSortOrder !== 'manual' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600'}`}
+              >
+                {getSortButtonContent(stableSortOrder)}
+              </button>
+            </div>
+            <SortableContext
+              // IMPORTANT: Use stableOrderedIds here for DND context, even if display is sorted
+              items={stableOrderedIds} 
+              strategy={rectSortingStrategy}
+            >
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                {/* Render the potentially sorted list */}
+                {displayedStableAssets.map((asset) => (
+                  <SortableAssetCard
+                    key={asset.uniqueId}
+                    asset={asset}
+                    isDeleting={asset.walletId > 0 && deletingId === asset.walletId} 
+                    renderActions={renderActions}
+                    renderChangePercentage={renderChangePercentage}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </section>
+        )}
+
+        {/* --- Crypto Assets Section --- */}
+        {cryptoAssets.length > 0 && (
+          <section>
+             <div className="flex justify-between items-center mb-4 pb-2 border-b border-gray-200 dark:border-gray-700">
+              <h2 className="text-2xl font-semibold">Crypto Assets</h2>
+               <button 
+                onClick={() => cycleSortOrder(cryptoSortOrder, setCryptoSortOrder)}
+                className={`px-3 py-1 rounded-md text-sm font-medium transition-colors ${cryptoSortOrder !== 'manual' ? 'bg-blue-100 dark:bg-blue-900 text-blue-700 dark:text-blue-300' : 'bg-gray-100 dark:bg-gray-700 hover:bg-gray-200 dark:hover:bg-gray-600'}`}
+              >
+                 {getSortButtonContent(cryptoSortOrder)}
+              </button>
+            </div>
+            <SortableContext
+               // IMPORTANT: Use cryptoOrderedIds here for DND context
+              items={cryptoOrderedIds}
+              strategy={rectSortingStrategy}
+            >
+              <div className="grid grid-cols-2 md:grid-cols-3 gap-4">
+                 {/* Render the potentially sorted list */}
+                {displayedCryptoAssets.map((asset) => (
+                  <SortableAssetCard
+                    key={asset.uniqueId}
+                    asset={asset}
+                    isDeleting={asset.walletId > 0 && deletingId === asset.walletId}
+                    renderActions={renderActions}
+                    renderChangePercentage={renderChangePercentage}
+                  />
+                ))}
+              </div>
+            </SortableContext>
+          </section>
+        )}
+      </div>
     </DndContext>
   );
 } 

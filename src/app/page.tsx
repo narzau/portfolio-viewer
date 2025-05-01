@@ -153,11 +153,9 @@ export default function Home() {
   const { data: allAssetsData, isLoading: isLoadingAssets, isFetching: isFetchingAssets } = trpc.asset.getAll.useQuery(
     undefined, 
     {
-      // Force refetch every time component renders
       refetchOnMount: true,
       refetchOnWindowFocus: true,
       refetchOnReconnect: true,
-      // Refresh data less frequently (e.g., every 30 seconds)
       refetchInterval: autoRefresh ? 30000 : false,
     }
   );
@@ -261,7 +259,7 @@ export default function Home() {
     if (allAssetsData) {
       fetchPriceChanges(allAssetsData);
     }
-  }, [allAssetsData, fetchPriceChanges]); // Keep fetchPriceChanges dependency
+  }, [allAssetsData, fetchPriceChanges]);
 
   // Directly fetch price change data LESS frequently
   useEffect(() => {
@@ -288,17 +286,28 @@ export default function Home() {
   }, [autoRefresh, allAssetsData, fetchPriceChanges]);
   
   const transformAssets = (dbAssets: DbAsset[] = []): Asset[] => {
-    return dbAssets.map((asset: DbAsset): Asset => ({
-      id: asset.id,
-      walletId: asset.walletId,
-      symbol: asset.symbol,
-      name: asset.name,
-      balance: asset.balance,
-      price: asset.price || '0',
-      lastUpdated: asset.lastUpdated?.toString() || new Date().toString(),
-      changePercent24h: priceChanges[asset.symbol] || undefined,
-      uniqueId: `asset-${asset.id}`
-    }));
+    return dbAssets.map((asset: DbAsset): Asset => {
+      let uniqueId = `asset-${asset.id}`;
+      // Assign specific uniqueId for known virtual assets
+      if (asset.walletId === -1 && asset.symbol === 'BTC') {
+        uniqueId = 'merged-BTC'; // Keep existing merged BTC ID
+      } else if (asset.walletId === -2 && asset.symbol === 'USD') {
+        uniqueId = 'virtual-unclaimed-gains'; // Assign ID for unclaimed gains
+      }
+      
+      return {
+        id: asset.id, // Keep original ID (number or virtual negative number)
+        walletId: asset.walletId,
+        symbol: asset.symbol,
+        name: asset.name,
+        balance: asset.balance,
+        price: asset.price || '0',
+        lastUpdated: asset.lastUpdated?.toString() || new Date().toString(),
+        // Assign 0% change to Unclaimed Gains (USD)
+        changePercent24h: asset.symbol === 'USD' && asset.walletId === -2 ? 0 : (priceChanges[asset.symbol] || undefined),
+        uniqueId: uniqueId
+      }
+    });
   };
 
   // Find Monero wallets and add "Update Balance" action
@@ -320,26 +329,35 @@ export default function Home() {
 
   // Function to check if an asset belongs to a Monero wallet
   const isMoneroWalletAsset = (asset: Asset): boolean => {
-    if (!allWallets) return false;
+    if (!allWallets || asset.walletId < 0) return false; // Exclude virtual assets
     const wallet = allWallets.find(w => w.id === asset.walletId);
     return wallet?.type === 'monero' || false;
   };
 
-  // Merge Bitcoin wallets into a single asset
-  const processedAssets = useMemo((): Asset[] => {
-    if (!allAssetsData) return [];
+  // Process assets, merge BTC, and then CATEGORIZE
+  const categorizedAssets = useMemo(() => {
+    // This structure will hold the final categorized assets
+    const result: { stableAssets: Asset[], cryptoAssets: Asset[] } = {
+      stableAssets: [],
+      cryptoAssets: []
+    };
+    
+    if (!allAssetsData) return result; // Return empty categories if no data
     
     const transformed = transformAssets(allAssetsData);
     
-    // Group Bitcoin assets together
-    const btcAssets = transformed.filter(asset => asset.symbol === 'BTC');
-    const nonBtcAssets = transformed.filter(asset => asset.symbol !== 'BTC');
+    const nonVirtualAssets = transformed.filter(a => a.walletId !== -2);
+    const virtualGainsAsset = transformed.find(a => a.walletId === -2);
     
-    // If there are multiple BTC assets, merge them
+    const btcAssets = nonVirtualAssets.filter(asset => asset.symbol === 'BTC');
+    const nonBtcAssets = nonVirtualAssets.filter(asset => asset.symbol !== 'BTC');
+    
+    // Initialize with const, we'll use push/spread later
+    const mergedAssets: Asset[] = [...nonBtcAssets]; 
+    
+    // Merge BTC if needed
     if (btcAssets.length > 1) {
       console.log(`Merging ${btcAssets.length} Bitcoin wallets`);
-      
-      // Calculate total BTC balance
       let totalBtcBalance = 0;
       let latestUpdate = new Date(0);
       let priceToUse = '0';
@@ -348,18 +366,15 @@ export default function Home() {
       for (const btc of btcAssets) {
         totalBtcBalance += parseFloat(btc.balance);
         const updateDate = new Date(btc.lastUpdated);
-        
-        // Keep the latest price and update time
         if (updateDate > latestUpdate) {
           latestUpdate = updateDate;
           priceToUse = btc.price;
         }
       }
       
-      // Create a merged BTC asset (using the first BTC asset's ID and walletId for reference)
       const mergedBtc: Asset = {
-        id: btcAssets[0].id,
-        walletId: -1,
+        id: btcAssets[0].id, 
+        walletId: -1, 
         symbol: 'BTC',
         name: 'Bitcoin (Merged)',
         balance: totalBtcBalance.toString(),
@@ -368,32 +383,50 @@ export default function Home() {
         changePercent24h: changePercent,
         uniqueId: 'merged-BTC'
       };
-      
-      // Return merged BTC with other non-BTC assets
-      return [...nonBtcAssets, mergedBtc];
+      mergedAssets.push(mergedBtc); // Add merged BTC
+    } else if (btcAssets.length === 1) {
+      mergedAssets.push(btcAssets[0]); // Add single BTC if exists
     }
     
-    // If there's only one or no BTC assets, return all assets unchanged
-    return transformed;
-  }, [allAssetsData, priceChanges, allWallets]);
+    // Add the virtual gains asset back if it exists
+    if (virtualGainsAsset) {
+      mergedAssets.push(virtualGainsAsset);
+    }
+    
+    // --- Categorize the final list --- 
+    mergedAssets.forEach(asset => {
+      // Stablecoins are USDC (real or virtual Unclaimed Gains)
+      if (asset.symbol === 'USDC') { 
+        result.stableAssets.push(asset);
+      } else {
+        result.cryptoAssets.push(asset);
+      }
+    });
+    
+    return result;
+    
+  }, [allAssetsData, priceChanges, allWallets]); // Dependencies remain the same
 
-  const displayedAssets = processedAssets;
+  // Use categorized assets for calculations
+  const displayedAssets = useMemo(() => {
+    return [...categorizedAssets.stableAssets, ...categorizedAssets.cryptoAssets];
+  }, [categorizedAssets]);
 
-  const totalBalance = useMemo(() => displayedAssets?.reduce((sum: number, asset: Asset) => {
+  // Total Balance (All Assets, including Unclaimed Gains)
+  const totalBalanceAll = useMemo(() => displayedAssets?.reduce((sum: number, asset: Asset) => {
       const balance = parseFloat(asset.balance);
       const price = parseFloat(asset.price);
       return sum + (isNaN(balance) || isNaN(price) ? 0 : balance * price);
   }, 0) || 0, [displayedAssets]); 
   
-  // Total (All Assets)
-  const totalBalanceAll = totalBalance; // Re-using existing calc, just renaming for clarity
+  // Total Change % (All Assets, including Unclaimed Gains which has 0% change)
   const totalChangePercentAll = useMemo(() => {
     if (!totalBalanceAll || totalBalanceAll <= 0 || !displayedAssets || displayedAssets.length === 0) return 0;
     let weightedChangeSum = 0;
     for (const asset of displayedAssets) {
       const balance = parseFloat(asset.balance);
       const price = parseFloat(asset.price);
-      const changePercent = asset.changePercent24h;
+      const changePercent = asset.changePercent24h; // Unclaimed Gains has 0%
       if (isNaN(balance) || isNaN(price) || balance <= 0 || price <= 0 || changePercent === null || changePercent === undefined || isNaN(changePercent)) continue;
       const assetValue = balance * price;
       const assetWeight = assetValue / totalBalanceAll;
@@ -402,23 +435,27 @@ export default function Home() {
     return weightedChangeSum;
   }, [displayedAssets, totalBalanceAll]);
 
+  // Total Absolute Change (All Assets, including Unclaimed Gains which has 0 change)
   const totalAbsoluteChangeAll = useMemo(() => {
     return displayedAssets?.reduce((sum, asset) => {
       const balance = parseFloat(asset.balance);
       const price = parseFloat(asset.price);
-      const changePercent = asset.changePercent24h;
+      const changePercent = asset.changePercent24h; // Unclaimed Gains has 0%
       if (isNaN(balance) || isNaN(price) || balance <= 0 || price <= 0 || changePercent === null || changePercent === undefined || isNaN(changePercent)) return sum;
       const currentValue = balance * price;
-      if (1 + (changePercent / 100) <= 0) return sum; 
-      const previousValue = currentValue / (1 + (changePercent / 100));
+      // Handle potential division by zero if changePercent is -100
+      const denominator = 1 + (changePercent / 100);
+      if (denominator <= 0) return sum; 
+      const previousValue = currentValue / denominator;
       const absoluteChange = currentValue - previousValue;
       return sum + absoluteChange;
     }, 0) || 0;
   }, [displayedAssets]);
 
-  // Crypto Only (Excluding USDC)
+  // Crypto Only (Excluding USDC AND Unclaimed Gains)
   const totalBalanceCryptoOnly = useMemo(() => displayedAssets?.reduce((sum, asset) => {
-    if (asset.symbol === 'USDC') return sum;
+    // Exclude USDC and the virtual Unclaimed Gains asset
+    if (asset.symbol === 'USDC' || asset.walletId === -2) return sum;
     const balance = parseFloat(asset.balance);
     const price = parseFloat(asset.price);
     if (isNaN(balance) || isNaN(price) || balance <= 0 || price <= 0) return sum;
@@ -429,7 +466,8 @@ export default function Home() {
     if (totalBalanceCryptoOnly <= 0 || !displayedAssets || displayedAssets.length === 0) return 0;
     let weightedChangeSum = 0;
     for (const asset of displayedAssets) {
-      if (asset.symbol === 'USDC') continue;
+       // Exclude USDC and the virtual Unclaimed Gains asset
+      if (asset.symbol === 'USDC' || asset.walletId === -2) continue;
       const balance = parseFloat(asset.balance);
       const price = parseFloat(asset.price);
       const changePercent = asset.changePercent24h;
@@ -443,25 +481,26 @@ export default function Home() {
 
   const totalAbsoluteChangeCryptoOnly = useMemo(() => {
     return displayedAssets?.reduce((sum, asset) => {
-      if (asset.symbol === 'USDC') return sum;
+      // Exclude USDC and the virtual Unclaimed Gains asset
+      if (asset.symbol === 'USDC' || asset.walletId === -2) return sum;
       const balance = parseFloat(asset.balance);
       const price = parseFloat(asset.price);
       const changePercent = asset.changePercent24h;
       if (isNaN(balance) || isNaN(price) || balance <= 0 || price <= 0 || changePercent === null || changePercent === undefined || isNaN(changePercent)) return sum;
       const currentValue = balance * price;
-      if (1 + (changePercent / 100) <= 0) return sum; 
-      const previousValue = currentValue / (1 + (changePercent / 100));
+      const denominator = 1 + (changePercent / 100);
+      if (denominator <= 0) return sum; 
+      const previousValue = currentValue / denominator;
       const absoluteChange = currentValue - previousValue;
       return sum + absoluteChange;
     }, 0) || 0;
   }, [displayedAssets]);
 
-  // Stablecoins Only (USDC)
+  // Stablecoins Only (USDC - NOT including Unclaimed Gains here)
   const totalBalanceStablecoins = useMemo(() => displayedAssets?.reduce((sum, asset) => {
     if (asset.symbol !== 'USDC') return sum; // Only include USDC
     const balance = parseFloat(asset.balance);
     const price = parseFloat(asset.price);
-    // Assuming USDC price is always ~$1, but use fetched price if available & valid
     const stablePrice = (isNaN(price) || price <= 0) ? 1.0 : price;
     if (isNaN(balance) || balance <= 0) return sum;
     return sum + (balance * stablePrice);
@@ -469,7 +508,6 @@ export default function Home() {
 
   // --- End Calculations --- 
 
-  const isLoadingDisplayedAssets = isLoadingAssets; 
   const isRefreshing = isFetchingAssets;
 
   const refreshAllMutation = trpc.wallet.refreshAll.useMutation({
@@ -502,16 +540,16 @@ export default function Home() {
 
   // Log transformed assets for debugging
   useEffect(() => {
-    if (processedAssets && processedAssets.length > 0) {
+    if (displayedAssets && displayedAssets.length > 0) {
       console.log('Displaying assets with prices:', 
-        processedAssets.map(a => ({ 
+        displayedAssets.map(a => ({ 
           symbol: a.symbol, 
           price: a.price,
           change: a.changePercent24h
         }))
       );
     }
-  }, [processedAssets]);
+  }, [displayedAssets]);
 
   const createWalletMutation = trpc.wallet.create.useMutation({
     onSuccess: () => {
@@ -571,7 +609,7 @@ export default function Home() {
 
           {/* ----- Value Display Area ----- */}
           <div className="space-y-4">
-            {/* --- Row 1: Stables & Crypto --- */}
+            {/* --- Row 1: Stables & Crypto --- REMOVE Unclaimed Gains card */}
             <div className="flex flex-col md:flex-row gap-4">
               {/* Col 1: Stablecoins */}
               <div className="flex-1 bg-white/10 backdrop-blur-sm rounded-xl p-4">
@@ -595,12 +633,12 @@ export default function Home() {
                 </div>
                 <div className={`text-sm font-medium ${totalChangePercentCryptoOnly >= 0 ? 'text-green-300' : 'text-red-300'} flex items-center flex-wrap gap-x-1.5`}>
                   <span>{totalChangePercentCryptoOnly >= 0 ? '▲' : '▼'} {Math.abs(totalChangePercentCryptoOnly).toFixed(2)}%</span>
-                  <span className="text-xs">(${totalAbsoluteChangeCryptoOnly >= 0 ? '+' : '-'}{Math.abs(totalAbsoluteChangeCryptoOnly).toLocaleString('en-US', { style: 'currency', currency: 'USD' })} 24h)</span>
+                  <span className="text-xs">({totalAbsoluteChangeCryptoOnly >= 0 ? '+' : '-'}{Math.abs(totalAbsoluteChangeCryptoOnly).toLocaleString('en-US', { style: 'currency', currency: 'USD' })} 24h)</span>
                 </div>
               </div>
             </div>
 
-            {/* --- Row 2: Total Portfolio --- */}
+            {/* --- Row 2: Total Portfolio --- (This total now includes Unclaimed Gains) */}
             <div className="bg-gradient-to-r from-white/15 to-white/5 backdrop-blur-sm rounded-xl p-5 shadow-inner">
                <div className="text-base text-white/80 mb-1">Total Portfolio Value</div>
                <div className="text-4xl font-bold text-white mb-1">
@@ -611,7 +649,7 @@ export default function Home() {
                </div>
                <div className={`text-lg font-semibold ${totalChangePercentAll >= 0 ? 'text-green-200' : 'text-red-200'} flex items-center flex-wrap gap-x-2`}>
                  <span>{totalChangePercentAll >= 0 ? '▲' : '▼'} {Math.abs(totalChangePercentAll).toFixed(2)}%</span>
-                 <span className="text-base font-medium">(${totalAbsoluteChangeAll >= 0 ? '+' : '-'}{Math.abs(totalAbsoluteChangeAll).toLocaleString('en-US', { style: 'currency', currency: 'USD' })} 24h)</span>
+                 <span className="text-base font-medium">({totalAbsoluteChangeAll >= 0 ? '+' : '-'}{Math.abs(totalAbsoluteChangeAll).toLocaleString('en-US', { style: 'currency', currency: 'USD' })} 24h)</span>
               </div>
             </div>
           </div>
@@ -642,7 +680,12 @@ export default function Home() {
           </div>
         </div>
         
-
+        {/* Background pattern */}
+        <div className="absolute inset-0 opacity-10">
+          <div className="absolute right-0 top-0 h-16 w-16 transform translate-x-1/3 -translate-y-1/3 rounded-full bg-white"></div>
+          <div className="absolute right-8 bottom-8 h-24 w-24 rounded-full bg-white"></div>
+          <div className="absolute left-0 bottom-0 h-16 w-16 transform -translate-x-1/3 translate-y-1/3 rounded-full bg-white"></div>
+        </div>
       </div>
       
       <div className="mb-6 flex flex-col md:flex-row gap-4">
@@ -742,8 +785,9 @@ export default function Home() {
       
       <div className="flex-grow">
         <AssetTable
-          assets={displayedAssets} 
-          isLoading={isLoadingDisplayedAssets}
+          stableAssets={categorizedAssets.stableAssets} 
+          cryptoAssets={categorizedAssets.cryptoAssets}
+          isLoading={isLoadingAssets}
           onUpdateMoneroBalance={handleUpdateMoneroBalance}
           isMoneroWalletAsset={isMoneroWalletAsset}
         />
@@ -752,7 +796,7 @@ export default function Home() {
       {/* Monero Balance Update Modal */}
       {updateMoneroWallet && (
         <MoneroBalanceModal
-          walletId={updateMoneroWallet.walletId}
+          walletId={updateMoneroWallet.id}
           currentBalance={updateMoneroWallet.balance}
           walletName={updateMoneroWallet.name}
           onClose={() => setUpdateMoneroWallet(null)}

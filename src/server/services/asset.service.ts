@@ -5,20 +5,66 @@ import { assets, portfolioSnapshots } from '../db/schema';
 import { and, eq } from 'drizzle-orm';
 import { format } from 'date-fns';
 import { CryptoApiService } from './crypto-api.service';
+import { GoogleSheetsService } from './googleSheets.service';
+
+// Define a type that matches the structure returned by repository.findAll()
+// Inferring from usage or repository definition is best, but defining explicitly works.
+// Assuming it includes properties like id, walletId, symbol, name, balance, price, lastUpdated
+interface DbAsset {
+  id: number;
+  walletId: number;
+  symbol: string;
+  name: string;
+  balance: string; // Assuming string based on usage below
+  price: string | null; // Assuming string or null
+  lastUpdated: Date | null;
+}
 
 export class AssetService {
   private repository: AssetRepository;
   private cryptoApiService: CryptoApiService;
   private walletRepository: WalletRepository;
+  private googleSheetsService: GoogleSheetsService;
 
   constructor() {
     this.repository = new AssetRepository();
     this.cryptoApiService = new CryptoApiService();
     this.walletRepository = new WalletRepository();
+    this.googleSheetsService = new GoogleSheetsService();
   }
 
-  async getAllAssets() {
-    return await this.repository.findAll();
+  async getAllAssets(): Promise<DbAsset[]> {
+    // 1. Fetch regular assets from DB
+    const dbAssets = await this.repository.findAll();
+    let combinedAssets: DbAsset[] = dbAssets; // Initialize with DB assets
+
+    // 2. Fetch unclaimed gains from Google Sheets
+    try {
+      const unclaimedGainsValue = await this.googleSheetsService.getUnclaimedGains();
+      
+      // 3. Create a virtual asset object for unclaimed gains
+      // Use a non-conflicting ID and walletId (e.g., negative numbers)
+      const virtualUnclaimedGainsAsset: DbAsset = {
+        id: -2, // Unique virtual ID
+        walletId: -2, // Unique virtual wallet ID
+        symbol: 'USDC', // Use USDC symbol to reuse its logo
+        name: 'Unclaimed Gains',
+        balance: unclaimedGainsValue.toString(),
+        price: '1', // Price is always 1 for USD representation
+        lastUpdated: new Date() // Use current time as last updated
+      };
+      
+      // 4. Append the virtual asset to the list
+      combinedAssets = [...dbAssets, virtualUnclaimedGainsAsset];
+
+    } catch (error) {
+      console.error("Failed to fetch or process unclaimed gains, returning only DB assets:", error);
+      // If fetching gains fails, return only the database assets
+      // Optionally, you could throw the error if you want the whole request to fail
+    }
+
+    // 5. Return the combined list
+    return combinedAssets;
   }
 
   async getAssetsBySymbol(symbol: string) {
@@ -107,41 +153,49 @@ export class AssetService {
       const formattedDate = format(now, 'yyyy-MM-dd'); // Use current date for snapshot key
       
       console.log(`[AssetService] Getting all assets...`);
-      const allAssets = await this.getAllAssets();
+      const allAssets = await this.getAllAssets(); // Will include virtual asset, potentially update prices?
       console.log(`[AssetService] Found ${allAssets.length} assets.`);
       
-      console.log(`[AssetService] Updating asset prices...`);
+      console.log(`[AssetService] Updating asset prices (excluding virtual)...`);
       for (const asset of allAssets) {
+        // Skip price update for virtual assets like Unclaimed Gains (walletId < 0)
+        if (asset.walletId < 0) {
+            console.log(`[AssetService] -> Skipping price update for virtual asset ${asset.name} (${asset.symbol})`);
+            continue;
+        }
         console.log(`[AssetService] -> Updating price for ${asset.symbol}`);
         try {
           const currentPrice = await this.cryptoApiService.getCurrentPrice(asset.symbol);
           console.log(`[AssetService] -> Fetched price for ${asset.symbol}: ${currentPrice}`);
           if (currentPrice !== null && !isNaN(currentPrice)) { 
-            await this.updateAssetPrice(asset.symbol, currentPrice);
-            console.log(`[AssetService] -> Successfully updated price for ${asset.symbol} in DB`);
+            // Use updateAssetPriceByWallet for accuracy if multiple wallets have same symbol
+            await this.updateAssetPriceByWallet(asset.walletId, asset.symbol, currentPrice);
+            console.log(`[AssetService] -> Successfully updated price for ${asset.symbol} in wallet ${asset.walletId} DB`);
           } else {
             console.warn(`[AssetService] -> Received invalid price (${currentPrice}) for ${asset.symbol}, skipping update.`);
           }
         } catch (error) {
-          console.error(`[AssetService] -> Error updating price for ${asset.symbol}:`, error);
+          console.error(`[AssetService] -> Error updating price for ${asset.symbol} in wallet ${asset.walletId}:`, error);
         }
       }
       console.log(`[AssetService] Finished updating asset prices.`);
       
       console.log(`[AssetService] Refreshing assets after price update...`);
-      const updatedAssets = await this.getAllAssets();
-      console.log(`[AssetService] Refreshed ${updatedAssets.length} assets.`);
+      // Important: Re-fetch assets *after* price updates to get correct values for snapshot
+      const updatedAssets = await this.repository.findAll(); // Fetch only DB assets for snapshot
+      console.log(`[AssetService] Refreshed ${updatedAssets.length} DB assets for snapshot.`);
       
-      console.log(`[AssetService] Calculating portfolio values...`);
+      console.log(`[AssetService] Calculating portfolio values from DB assets...`);
       let totalValue = 0;
       let btcValue = 0;
       let ethValue = 0;
       let solValue = 0;
       let otherValue = 0;
       
+      // Calculate snapshot ONLY from real database assets
       updatedAssets.forEach(asset => {
         const balance = parseFloat(asset.balance as string);
-        const price = parseFloat(asset.price as string);
+        const price = parseFloat(asset.price as string); // Use the updated price
         if (isNaN(balance) || isNaN(price)) return; 
         const value = balance * price;
         totalValue += value;
@@ -150,7 +204,7 @@ export class AssetService {
         else if (asset.symbol === 'SOL') solValue += value;
         else otherValue += value;
       });
-      console.log(`[AssetService] Calculated total value: ${totalValue}`);
+      console.log(`[AssetService] Calculated snapshot total value: ${totalValue}`);
       
       // Upsert snapshot (Insert or Update)
       console.log(`[AssetService] Upserting snapshot for date: ${formattedDate}`);
@@ -176,10 +230,10 @@ export class AssetService {
       console.log(`[AssetService] Snapshot upserted for ${formattedDate}.`);
       
       console.log(`[AssetService] createPortfolioSnapshot finished successfully.`);
-      return { success: true, totalValue };
+      return { success: true, totalValue }; // Return total value from DB assets only
     } catch (error) {
         console.error(`[AssetService] CRITICAL ERROR in createPortfolioSnapshot:`, error);
         throw new Error(`Failed to create portfolio snapshot: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-} 
+}

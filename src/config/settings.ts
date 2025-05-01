@@ -25,6 +25,7 @@ export const settings = {
   
   // External services
   STORAGE_URL: process.env.STORAGE_URL || 'http://localhost:3000/storage',
+  GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || '',
 };
 
 export default settings;

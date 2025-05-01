@@ -91,7 +91,8 @@ export class WalletIntegrationService {
       // Get current XMR price if not provided in prices
       let xmrPrice = prices['monero'] || prices['XMR'] || prices['xmr'];
       if (!xmrPrice) {
-        xmrPrice = await this.cryptoPrice.getMoneroPrice();
+        // get updated price or use cached price
+        xmrPrice = await this.cryptoPrice.getMoneroPrice() || await this.cryptoPrice.getPrice('monero', 'monero', 'XMR') || 0;
       }
       
       console.log(`[WalletIntegrationService] Got XMR price: $${xmrPrice}`);

@@ -1,7 +1,7 @@
 import { db } from '../db';
 import { AssetRepository } from '../repositories/asset.repository';
 import { WalletRepository } from '../repositories/wallet.repository';
-import { assets, portfolioSnapshots } from '../db/schema';
+import * as schema from '../db/schema';
 import { and, eq } from 'drizzle-orm';
 import { format } from 'date-fns';
 import { CryptoApiService } from './crypto-api.service';
@@ -85,18 +85,18 @@ export class AssetService {
     const priceString = price.toString();
     
     // Find the asset for this wallet
-    const existingAssets = await db.select().from(assets).where(
-      and(eq(assets.walletId, walletId), eq(assets.symbol, symbol))
+    const existingAssets = await db.select().from(schema.assets).where(
+      and(eq(schema.assets.walletId, walletId), eq(schema.assets.symbol, symbol))
     );
     
     if (existingAssets.length > 0) {
       // Update the specific asset
-      await db.update(assets)
+      await db.update(schema.assets)
         .set({ 
           price: priceString,
           lastUpdated: new Date()
         })
-        .where(and(eq(assets.walletId, walletId), eq(assets.symbol, symbol)));
+        .where(and(eq(schema.assets.walletId, walletId), eq(schema.assets.symbol, symbol)));
       
       return { success: true };
     } else {
@@ -108,9 +108,9 @@ export class AssetService {
 
   async updateAssetBalance(walletId: number, symbol: string, name: string | null, balance: number, price: number | null) {
     // Find existing asset
-    const existingAssets = await db.select().from(assets).where(and(eq(assets.walletId, walletId), eq(assets.symbol, symbol)));
+    const existingAssets = await db.select().from(schema.assets).where(and(eq(schema.assets.walletId, walletId), eq(schema.assets.symbol, symbol)));
     
-    const dataToSet: Partial<typeof assets.$inferInsert> = {
+    const dataToSet: Partial<typeof schema.assets.$inferInsert> = {
         balance: balance.toString(),
         lastUpdated: new Date()
     };
@@ -123,7 +123,7 @@ export class AssetService {
 
     if (existingAssets.length > 0) {
         // Update
-        await db.update(assets).set(dataToSet).where(and(eq(assets.walletId, walletId), eq(assets.symbol, symbol)));
+        await db.update(schema.assets).set(dataToSet).where(and(eq(schema.assets.walletId, walletId), eq(schema.assets.symbol, symbol)));
         return { ...existingAssets[0], ...dataToSet };
     } else {
         // Create
@@ -135,7 +135,7 @@ export class AssetService {
             price: (price !== null && price > 0 && !isNaN(price)) ? price.toString() : '0',
             lastUpdated: new Date()
         };
-        const result = await db.insert(assets).values(insertData).returning();
+        const result = await db.insert(schema.assets).values(insertData).returning();
         return result[0];
     }
   }
@@ -208,7 +208,7 @@ export class AssetService {
       
       // Upsert snapshot (Insert or Update)
       console.log(`[AssetService] Upserting snapshot for date: ${formattedDate}`);
-      await db.insert(portfolioSnapshots)
+      await db.insert(schema.portfolioSnapshots)
           .values({
             date: formattedDate,
             totalValue: totalValue.toString(),
@@ -218,7 +218,7 @@ export class AssetService {
             otherValue: otherValue.toString()
           })
           .onConflictDoUpdate({
-              target: portfolioSnapshots.date, // Assuming date is unique constraint
+              target: schema.portfolioSnapshots.date, // Assuming date is unique constraint
               set: {
                   totalValue: totalValue.toString(),
                   btcValue: btcValue.toString(),

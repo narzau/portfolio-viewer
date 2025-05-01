@@ -23,17 +23,18 @@ export class GoogleSheetsService {
 
       const values = response.data.values;
       if (values && values.length > 0 && values[0].length > 0) {
-        // Assuming the value is a number, potentially with currency symbols or commas
-        const rawValue = values[0][0];
+        const rawValue = values[0][0]; // Example: $1.009,75
         
-        // 1. Replace European decimal comma with standard period
-        const valueWithPeriod = String(rawValue).replace(/,/g, '.');
+        // 1. Remove thousands separators (periods)
+        const valueWithoutThousandsSep = String(rawValue).replace(/\./g, ''); // -> $1009,75
         
-        // 2. Remove any remaining non-numeric characters except the period and minus sign
-        // (This removes currency symbols, thousands separators like spaces or actual periods if used incorrectly)
-        const cleanedValue = valueWithPeriod.replace(/[^\d.-]/g, ''); 
+        // 2. Replace European decimal comma with standard period
+        const valueWithStandardDecimal = valueWithoutThousandsSep.replace(/,/g, '.'); // -> $1009.75
         
-        const numericValue = parseFloat(cleanedValue);
+        // 3. Remove any remaining non-numeric characters (like currency symbols) except period and minus
+        const cleanedValue = valueWithStandardDecimal.replace(/[^\d.-]/g, ''); // -> 1009.75
+        
+        const numericValue = parseFloat(cleanedValue); // -> 1009.75
 
         if (isNaN(numericValue)) {
           console.error(`Value in ${this.sheetName}!${this.range} is not a valid number:`, rawValue);

@@ -20,91 +20,31 @@ export interface PriceData {
   changePercent24Hr: number | null;
 }
 
+// Define mapping for internal symbols to CoinGecko IDs
+const SYMBOL_TO_COINGECKO_ID: Record<string, string> = {
+  BTC: 'bitcoin',
+  ETH: 'ethereum',
+  SOL: 'solana',
+  USDC: 'usd-coin',
+  XMR: 'monero',
+  // Add other mappings if needed
+};
+
 export class CryptoPrice {
-  // API base URLs
-  private apiBaseUrl = 'https://api.coincap.io/v2';
-  private blockchainInfoUrl = 'https://blockchain.info';
+  // Keep API base URLs if other methods still use them
+  // private apiBaseUrl = 'https://api.coincap.io/v2';
+  // private blockchainInfoUrl = 'https://blockchain.info'; 
+  private coingeckoApiBaseUrl = 'https://api.coingecko.com/api/v3';
   
-  // Tracking API calls for rate limiting
+  // Keep rate limiting state if other methods use it
   private lastApiCall: Record<string, number> = {};
-  private minDelayBetweenCalls = 1000; // 1 second minimum between calls to same API
+  private minDelayBetweenCalls = 1000; // 1 second
+
+  // REMOVE all individual getFrom... methods (getFromCoinCap, getFromBlockchainInfo, etc.)
+  // REMOVE getPrice method
+  // REMOVE individual getXxxPrice methods (getBitcoinPrice, getEthereumPrice, etc.)
   
-  // Fetch price from CoinCap with retry logic
-  async getFromCoinCap(assetId: string, retryCount = 0): Promise<number | null> {
-    const apiKey = 'coincap';
-    
-    // Check if we need to wait before calling API again
-    await this.respectRateLimit(apiKey);
-    
-    try {
-      console.log(`[CryptoPrice] Fetching from CoinCap: ${assetId}`);
-      const response = await axios.get(
-        `${this.apiBaseUrl}/assets/${assetId}`,
-        { 
-          timeout: 5000,
-          headers: {
-            'Accept': 'application/json'
-          }
-        }
-      );
-      
-      if (response.data?.data?.priceUsd) {
-        const price = parseFloat(response.data.data.priceUsd);
-        console.log(`[CryptoPrice] CoinCap price for ${assetId}: $${price}`);
-        return price;
-      }
-    } catch (error: unknown) {
-      if (axios.isAxiosError(error) && error.response?.status === 429 && retryCount < 3) {
-        // Rate limit hit - back off and retry
-        const backoffTime = Math.pow(2, retryCount) * 1000;
-        console.warn(`[CryptoPrice] Rate limit hit, backing off for ${backoffTime}ms before retry ${retryCount + 1}/3`);
-        await new Promise(resolve => setTimeout(resolve, backoffTime));
-        return this.getFromCoinCap(assetId, retryCount + 1);
-      }
-      console.error(`[CryptoPrice] CoinCap error for ${assetId}:`, 
-        axios.isAxiosError(error) && error.response?.status 
-          ? `Status: ${error.response.status}` 
-          : error instanceof Error ? error.message : error);
-    }
-    return null;
-  }
-
-  // Fetch price from Blockchain.info (for Bitcoin)
-  async getFromBlockchainInfo(retryCount = 0): Promise<number | null> {
-    const apiKey = 'blockchain.info';
-    
-    // Check if we need to wait before calling API again
-    await this.respectRateLimit(apiKey);
-    
-    try {
-      console.log(`[CryptoPrice] Fetching Bitcoin price from Blockchain.info`);
-      const response = await axios.get(
-        `${this.blockchainInfoUrl}/ticker`,
-        { timeout: 5000 }
-      );
-      
-      if (response.data?.USD?.last) {
-        const price = response.data.USD.last;
-        console.log(`[CryptoPrice] Blockchain.info price for Bitcoin: $${price}`);
-        return price;
-      }
-    } catch (error: unknown) {
-      if (axios.isAxiosError(error) && error.response?.status === 429 && retryCount < 3) {
-        // Rate limit hit - back off and retry
-        const backoffTime = Math.pow(2, retryCount) * 1000;
-        console.warn(`[CryptoPrice] Rate limit hit, backing off for ${backoffTime}ms before retry ${retryCount + 1}/3`);
-        await new Promise(resolve => setTimeout(resolve, backoffTime));
-        return this.getFromBlockchainInfo(retryCount + 1);
-      }
-      console.error(`[CryptoPrice] Blockchain.info error:`, 
-        axios.isAxiosError(error) && error.response?.status 
-          ? `Status: ${error.response.status}` 
-          : error instanceof Error ? error.message : error);
-    }
-    return null;
-  }
-
-  // Helper to respect rate limits
+  // Keep helper to respect rate limits if needed, or simplify if only one API is used now
   private async respectRateLimit(apiKey: string): Promise<void> {
     const now = Date.now();
     const lastCall = this.lastApiCall[apiKey] || 0;
@@ -115,140 +55,63 @@ export class CryptoPrice {
       console.log(`[CryptoPrice] Rate limiting: waiting ${delayNeeded}ms before calling ${apiKey} API`);
       await new Promise(resolve => setTimeout(resolve, delayNeeded));
     }
-    
-    // Update last call time
     this.lastApiCall[apiKey] = Date.now();
   }
 
-  // Fetch price from CoinGecko
-  async getFromCoinGecko(assetId: string, retryCount = 0): Promise<number | null> {
-    const apiKey = 'coingecko';
-    
-    // Check if we need to wait before calling API again
+  // NEW Batch fetch method using CoinGecko
+  async fetchPricesBatch(symbols: string[], retryCount = 0): Promise<Record<string, number | null>> {
+    const apiKey = 'coingecko_batch';
+    const coinGeckoIds = symbols
+      .map(symbol => SYMBOL_TO_COINGECKO_ID[symbol.toUpperCase()])
+      .filter(id => !!id); // Filter out symbols without a mapping
+
+    if (coinGeckoIds.length === 0) {
+      console.warn('[CryptoPrice] fetchPricesBatch called with no mappable symbols.');
+      return {};
+    }
+
+    const idsParam = coinGeckoIds.join(',');
+    const url = `${this.coingeckoApiBaseUrl}/simple/price?ids=${idsParam}&vs_currencies=usd`;
+
     await this.respectRateLimit(apiKey);
-    
+
     try {
-      console.log(`[CryptoPrice] Fetching from CoinGecko: ${assetId}`);
-      const response = await axios.get(
-        `https://api.coingecko.com/api/v3/simple/price?ids=${assetId}&vs_currencies=usd`,
-        { timeout: 5000 }
-      );
-      
-      if (response.data && response.data[assetId] && response.data[assetId].usd) {
-        const price = response.data[assetId].usd;
-        console.log(`[CryptoPrice] CoinGecko price for ${assetId}: $${price}`);
-        return price;
+      console.log(`[CryptoPrice] Fetching batch prices from CoinGecko for IDs: ${idsParam}`);
+      const response = await axios.get(url, { timeout: 8000 }); // Increased timeout slightly
+
+      const prices: Record<string, number | null> = {};
+
+      // Map results back to original symbols
+      for (const symbol of symbols) {
+        const coinGeckoId = SYMBOL_TO_COINGECKO_ID[symbol.toUpperCase()];
+        if (coinGeckoId && response.data && response.data[coinGeckoId] && response.data[coinGeckoId].usd) {
+          prices[symbol.toUpperCase()] = response.data[coinGeckoId].usd;
+        } else {
+          prices[symbol.toUpperCase()] = null; // Mark as null if not found in response
+        }
       }
+      console.log('[CryptoPrice] Successfully fetched batch prices:', prices);
+      return prices;
+
     } catch (error: unknown) {
       if (axios.isAxiosError(error) && error.response?.status === 429 && retryCount < 3) {
-        // Rate limit hit - back off and retry
         const backoffTime = Math.pow(2, retryCount) * 1000;
-        console.warn(`[CryptoPrice] Rate limit hit, backing off for ${backoffTime}ms before retry ${retryCount + 1}/3`);
+        console.warn(`[CryptoPrice] CoinGecko batch rate limit hit, backing off for ${backoffTime}ms before retry ${retryCount + 1}/3`);
         await new Promise(resolve => setTimeout(resolve, backoffTime));
-        return this.getFromCoinGecko(assetId, retryCount + 1);
+        return this.fetchPricesBatch(symbols, retryCount + 1); // Retry with original symbols
       }
-      console.error(`[CryptoPrice] CoinGecko error for ${assetId}:`, 
+      console.error(`[CryptoPrice] CoinGecko batch error:`, 
         axios.isAxiosError(error) && error.response?.status 
           ? `Status: ${error.response.status}` 
-          : error instanceof Error ? error.message : error);
+          : error instanceof Error ? error.message : String(error));
+      
+      // On failure, return object with null for all requested symbols
+      const errorResult: Record<string, number | null> = {};
+      symbols.forEach(symbol => { errorResult[symbol.toUpperCase()] = null; });
+      return errorResult;
     }
-    return null;
   }
-
-  // Fetch price from Binance (only for major tokens)
-  async getFromBinance(symbol: string, retryCount = 0): Promise<number | null> {
-    const apiKey = 'binance';
-    
-    // Check if we need to wait before calling API again
-    await this.respectRateLimit(apiKey);
-    
-    try {
-      const marketSymbol = `${symbol.toUpperCase()}USDT`;
-      console.log(`[CryptoPrice] Fetching from Binance: ${marketSymbol}`);
-      
-      const response = await axios.get(
-        `https://api.binance.com/api/v3/ticker/price?symbol=${marketSymbol}`,
-        { timeout: 5000 }
-      );
-      
-      if (response.data?.price) {
-        const price = parseFloat(response.data.price);
-        console.log(`[CryptoPrice] Binance price for ${symbol}: $${price}`);
-        return price;
-      }
-    } catch (error: unknown) {
-      if (axios.isAxiosError(error) && error.response?.status === 429 && retryCount < 3) {
-        // Rate limit hit - back off and retry
-        const backoffTime = Math.pow(2, retryCount) * 1000;
-        console.warn(`[CryptoPrice] Rate limit hit, backing off for ${backoffTime}ms before retry ${retryCount + 1}/3`);
-        await new Promise(resolve => setTimeout(resolve, backoffTime));
-        return this.getFromBinance(symbol, retryCount + 1);
-      }
-      console.error(`[CryptoPrice] Binance error for ${symbol}:`, 
-        axios.isAxiosError(error) && error.response?.status 
-          ? `Status: ${error.response.status}` 
-          : error instanceof Error ? error.message : error);
-    }
-    return null;
-  }
-
-  // Simplify getPrice - just try sources in order, no local cache
-  async getPrice(coinCapId: string, coinGeckoId: string, binanceSymbol: string): Promise<number | null> {
-      let price = await this.getFromCoinCap(coinCapId);
-      if (price !== null) return price;
-      
-      console.log(`[CryptoPrice] CoinCap failed for ${coinCapId}, trying CoinGecko...`);
-      price = await this.getFromCoinGecko(coinGeckoId);
-      if (price !== null) return price;
-
-      // Only try Binance if symbol provided
-      if (binanceSymbol) {
-        console.log(`[CryptoPrice] CoinGecko failed for ${coinGeckoId}, trying Binance...`);
-        price = await this.getFromBinance(binanceSymbol);
-        if (price !== null) return price;
-      }
-      
-      console.warn(`[CryptoPrice] All price sources failed for ${coinCapId}/${coinGeckoId}/${binanceSymbol}`);
-      return null; // Return null if all sources fail
-  }
-
-  // --- Specific Asset Price Methods --- 
-
-  // These methods now just call getPrice with the appropriate IDs
-
-  async getBitcoinPrice(): Promise<number | null> { // Return null on failure
-    // Try Blockchain.info first as it might be more reliable for BTC
-    const price = await this.getFromBlockchainInfo();
-    if (price !== null) return price;
-    // Fallback to the standard multi-source getPrice
-    console.log(`[CryptoPrice] Blockchain.info failed for BTC, trying standard getPrice...`);
-    return await this.getPrice('bitcoin', 'bitcoin', 'BTC'); 
-  }
-
-  async getEthereumPrice(): Promise<number | null> { // Return null on failure
-    return await this.getPrice('ethereum', 'ethereum', 'ETH');
-  }
-
-  async getSolanaPrice(): Promise<number | null> { // Return null on failure
-    return await this.getPrice('solana', 'solana', 'SOL');
-  }
-
-  async getUsdcPrice(): Promise<number | null> { // Return null on failure
-    // Primarily use CoinGecko for stablecoins, CoinCap might be less accurate
-    let price = await this.getFromCoinGecko('usd-coin');
-    if (price !== null) return price;
-    // Fallback to CoinCap if CoinGecko fails
-    console.log(`[CryptoPrice] CoinGecko failed for USDC, trying CoinCap...`);
-    price = await this.getFromCoinCap('usd-coin');
-    // Return price or default to 1 if both fail
-    return price !== null ? price : 1; 
-  }
-
-  async getMoneroPrice(): Promise<number | null> { // Return null on failure
-    // Monero isn't typically on Binance, so try CoinCap then CoinGecko
-    return await this.getPrice('monero', 'monero', ''); // Pass empty string for Binance symbol
-  }
-
-  // ... (Keep getMultiplePrices and related methods, they need refactoring 
-  //      but focus on single price first) ...
+  
+  // REMOVE or refactor getMultiplePrices / getMultiplePricesWithChanges if they are still used elsewhere
+  // For now, assume they are not needed as PriceCacheService handles the main price logic
 } 

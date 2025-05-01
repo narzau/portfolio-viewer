@@ -84,25 +84,29 @@ export class WalletIntegrationService {
     }
   }
 
-  private async refreshMoneroWallet(walletId: number, prices: {[key: string]: number}): Promise<void> {
+  private async refreshMoneroWallet(walletId: number, prices: {[key: string]: number | null}): Promise<void> {
     console.log(`[WalletIntegrationService] Refreshing Monero wallet ${walletId} prices`);
     
     try {
-      // Get current XMR price if not provided in prices
-      let xmrPrice = prices['monero'] || prices['XMR'] || prices['xmr'];
-      if (!xmrPrice) {
-        // get updated price or use cached price
-        xmrPrice = await this.cryptoPrice.getMoneroPrice() || await this.cryptoPrice.getPrice('monero', 'monero', 'XMR') || 0;
+      // Get XMR price directly from the passed-in (cached) prices
+      // Use optional chaining and nullish coalescing
+      const xmrPrice = prices?.xmr ?? null; // Get XMR price or null
+      
+      if (xmrPrice !== null && xmrPrice > 0 && !isNaN(xmrPrice)) {
+         console.log(`[WalletIntegrationService] Using XMR price from input: $${xmrPrice}`);
+         // Update the XMR asset price for this specific wallet
+         await this.assetService.updateAssetPriceByWallet(walletId, 'XMR', xmrPrice);
+         console.log(`[WalletIntegrationService] Updated XMR asset price for wallet ${walletId} to $${xmrPrice}`);
+      } else {
+         console.warn(`[WalletIntegrationService] No valid XMR price found in input prices for wallet ${walletId}. Price will not be updated.`);
+         // Do not update the price if a valid one wasn't provided via the cache
+         // The asset will retain its last known price from the DB.
       }
-      
-      console.log(`[WalletIntegrationService] Got XMR price: $${xmrPrice}`);
-      
-      // Update or create the XMR asset for this specific wallet
-      await this.assetService.updateAssetPriceByWallet(walletId, 'XMR', xmrPrice);
-      console.log(`[WalletIntegrationService] Updated/created XMR asset for wallet ${walletId} with price $${xmrPrice}`);
+
     } catch (error) {
       console.error(`[WalletIntegrationService] Error refreshing Monero wallet ${walletId}:`, error);
-      throw error;
+      // Don't re-throw here to allow other wallet refreshes to proceed
+      // throw error; 
     }
   }
 } 

@@ -1,5 +1,6 @@
 import { CryptoPrice } from '../../integrations/crypto/price';
 import { createClient, RedisClientType } from 'redis';
+import { AssetService } from './asset.service';
 
 // Use number for timestamp (milliseconds since epoch)
 interface CachedPrices {
@@ -21,11 +22,13 @@ const CACHE_STALE_MS = 2 * 60 * 1000;
 export class PriceCacheService {
     private priceIntegration: CryptoPrice;
     private redisClient: RedisClientType;
+    private assetService: AssetService;
     private isRedisConnected = false;
     private isUpdating = false; // Still useful as a local lock
 
     constructor() {
         this.priceIntegration = new CryptoPrice();
+        this.assetService = new AssetService();
         
         // Initialize Redis client
         // The redis library automatically picks up REDIS_URL from env if present
@@ -55,45 +58,51 @@ export class PriceCacheService {
     private async _fetchAndCachePrices(): Promise<CachedPrices | null> {
         if (this.isUpdating) {
             console.log('[PriceCacheService] Background update already in progress, skipping fetch.');
-            // If update is already running, try returning current cache one more time
             return this._readCacheFromRedis(); 
         }
         this.isUpdating = true;
-        console.log('[PriceCacheService] Starting price fetch and cache update...');
+        console.log('[PriceCacheService] Starting price fetch (batch) and cache update...');
 
         let previousPrices: CachedPrices | null = null;
         try {
-             // Get previous values from cache to use as fallbacks
             previousPrices = await this._readCacheFromRedis();
             
-            const results = await Promise.allSettled([
-                this.priceIntegration.getBitcoinPrice(),
-                this.priceIntegration.getEthereumPrice(),
-                this.priceIntegration.getSolanaPrice(),
-                this.priceIntegration.getUsdcPrice(),
-                this.priceIntegration.getMoneroPrice()
-            ]);
+            // Define symbols and fetch prices using the new batch method
+            const symbolsToFetch = ['BTC', 'ETH', 'SOL', 'USDC', 'XMR'];
+            const fetchedPricesMap = await this.priceIntegration.fetchPricesBatch(symbolsToFetch);
 
-            const [btcResult, ethResult, solResult, usdcResult, xmrResult] = results;
-
-            // Build new cache data, falling back to previous values
+            // Build new cache data using the map, falling back to previous values
             const newCacheData: CachedPrices = {
-                btc: (btcResult.status === 'fulfilled' && typeof btcResult.value === 'number') ? btcResult.value : previousPrices?.btc ?? null,
-                eth: (ethResult.status === 'fulfilled' && typeof ethResult.value === 'number') ? ethResult.value : previousPrices?.eth ?? null,
-                sol: (solResult.status === 'fulfilled' && typeof solResult.value === 'number') ? solResult.value : previousPrices?.sol ?? null,
-                usdc: (usdcResult.status === 'fulfilled' && typeof usdcResult.value === 'number') ? usdcResult.value : previousPrices?.usdc ?? 1,
-                xmr: (xmrResult.status === 'fulfilled' && typeof xmrResult.value === 'number') ? xmrResult.value : previousPrices?.xmr ?? null,
-                lastUpdated: Date.now() // Use timestamp number
+                btc: (fetchedPricesMap['BTC'] !== null && !isNaN(fetchedPricesMap['BTC'])) 
+                    ? fetchedPricesMap['BTC'] 
+                    : previousPrices?.btc ?? null,
+                eth: (fetchedPricesMap['ETH'] !== null && !isNaN(fetchedPricesMap['ETH'])) 
+                    ? fetchedPricesMap['ETH'] 
+                    : previousPrices?.eth ?? null,
+                sol: (fetchedPricesMap['SOL'] !== null && !isNaN(fetchedPricesMap['SOL'])) 
+                    ? fetchedPricesMap['SOL'] 
+                    : previousPrices?.sol ?? null,
+                usdc: (fetchedPricesMap['USDC'] !== null && !isNaN(fetchedPricesMap['USDC'])) 
+                    ? fetchedPricesMap['USDC'] 
+                    : previousPrices?.usdc ?? 1, // Default USDC to 1
+                // For XMR: Use fetched price if valid, otherwise keep previous *valid* price, else null
+                xmr: (fetchedPricesMap['XMR'] !== null && !isNaN(fetchedPricesMap['XMR'])) 
+                    ? fetchedPricesMap['XMR'] 
+                    : (previousPrices?.xmr !== null && typeof previousPrices?.xmr === 'number' && !isNaN(previousPrices.xmr)) // Check previous safely
+                        ? previousPrices.xmr 
+                        : null, // Only store null if fetch failed AND previous was null/invalid
+                lastUpdated: Date.now()
             };
 
             // Store in Redis with TTL
+            let redisWriteSuccess = false;
             if (this.isRedisConnected) {
                 try {
                     await this.redisClient.set(CACHE_KEY, JSON.stringify(newCacheData), {
                         EX: CACHE_TTL_SECONDS 
                     });
-                    // Log successful cache write
-                    console.log(`[PriceCacheService][Redis] Wrote cache key '${CACHE_KEY}' with TTL ${CACHE_TTL_SECONDS}s.`);
+                    console.log(`[PriceCacheService][Redis] Wrote cache key '${CACHE_KEY}'.`);
+                    redisWriteSuccess = true;
                 } catch (redisError) {
                      console.error(`[PriceCacheService][Redis] Error writing cache key '${CACHE_KEY}':`, redisError);
                 }
@@ -101,10 +110,30 @@ export class PriceCacheService {
                  console.error('[PriceCacheService][Redis] Not connected, cannot write cache.');
             }
             
+            // If Redis write was successful, attempt to update DB prices
+            if (redisWriteSuccess) {
+                console.log('[PriceCacheService] Attempting to update DB prices from fresh cache data...');
+                const dbUpdatePromises = Object.entries(newCacheData)
+                    .filter(([key, price]) => key !== 'lastUpdated' && price !== null && !isNaN(price))
+                    .map(async ([symbol, price]) => {
+                        try {
+                            // We use updateAssetPrice which updates ALL assets with that symbol.
+                            // If you need per-wallet accuracy, logic here would be more complex.
+                            await this.assetService.updateAssetPrice(symbol, price as number);
+                            console.log(`[PriceCacheService] DB price update successful for ${symbol}.`);
+                        } catch (dbError) {
+                            console.error(`[PriceCacheService] DB price update FAILED for ${symbol}:`, dbError);
+                            // Continue trying other symbols even if one fails
+                        }
+                    });
+                await Promise.allSettled(dbUpdatePromises); // Wait for all DB updates to settle
+                console.log('[PriceCacheService] Finished attempting DB price updates.');
+            }
+            
             return newCacheData;
 
         } catch (error) {
-            console.error('[PriceCacheService] Error during fetch/cache update:', error);
+            console.error('[PriceCacheService] Error during batch fetch/cache update:', error);
             return previousPrices; // Return previous cache on error
         } finally {
             this.isUpdating = false;
@@ -155,6 +184,15 @@ export class PriceCacheService {
             this._fetchAndCachePrices(); // Fire-and-forget update
             return null; // Return null as cache was empty
         }
+    }
+
+    // NEW method to force a refresh and return the results
+    async getFreshPrices(): Promise<Readonly<CachedPrices> | null> {
+        console.log('[PriceCacheService] Force refreshing prices now...');
+        // Directly call the internal fetch/cache method and await its result
+        const freshData = await this._fetchAndCachePrices(); 
+        console.log('[PriceCacheService] Force refresh finished.');
+        return freshData ? Object.freeze(freshData) : null;
     }
 
     // No longer need background interval methods

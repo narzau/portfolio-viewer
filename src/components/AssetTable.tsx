@@ -145,8 +145,8 @@ export function AssetTable({ stableAssets, cryptoAssets, isLoading, onUpdateMone
   const [cryptoOrderedIds, setCryptoOrderedIds] = useState<string[]>([]);
   
   // State for current sort order
-  const [stableSortOrder, setStableSortOrder] = useState<SortOrder>('manual');
-  const [cryptoSortOrder, setCryptoSortOrder] = useState<SortOrder>('manual');
+  const [stableSortOrder, setStableSortOrder] = useState<SortOrder>('valueDesc');
+  const [cryptoSortOrder, setCryptoSortOrder] = useState<SortOrder>('valueDesc');
   
   const utils = trpc.useUtils();
   const [deletingId, setDeletingId] = useState<number | null>(null);

@@ -1,6 +1,27 @@
 import { google } from 'googleapis';
 import settings from '../../config/settings'; // Import settings
 
+function parseNumericValue(rawValue: number) {
+    // 1. Remove thousands separators (periods)
+    const valueWithoutThousandsSep = String(rawValue).replace(/\./g, ''); // -> $1009,75
+    
+    // 2. Replace European decimal comma with standard period
+    const valueWithStandardDecimal = valueWithoutThousandsSep.replace(/,/g, '.'); // -> $1009.75
+    
+    // 3. Remove any remaining non-numeric characters (like currency symbols) except period and minus
+    const cleanedValue = valueWithStandardDecimal.replace(/[^\d.-]/g, ''); // -> 1009.75
+    
+    const numericValue = parseFloat(cleanedValue); // -> 1009.75
+
+    if (isNaN(numericValue)) {
+      console.error(`Value is not a valid number:`, rawValue);
+      // Return 0 or throw an error depending on desired behavior
+      return 0; 
+    }
+    console.log(`Fetched unclaimed gains: ${numericValue}`);
+    return numericValue
+}
+
 export class GoogleSheetsService {
   private sheets = google.sheets('v4');
   private apiKey = settings.GOOGLE_API_KEY;
@@ -8,7 +29,11 @@ export class GoogleSheetsService {
   private sheetName = 'test_excel'; // From user's confirmation
   private range = 'A1';
 
-  async getUnclaimedGains(): Promise<number> {
+
+  async getUnclaimedGains(): Promise<{
+    approvedGains: number,
+    notInvoicedGains: number
+  }> {
     if (!this.apiKey) {
       console.error('GOOGLE_API_KEY environment variable is not set.');
       throw new Error('Google API key is missing. Cannot fetch unclaimed gains.');
@@ -18,34 +43,24 @@ export class GoogleSheetsService {
       const response = await this.sheets.spreadsheets.values.get({
         key: this.apiKey,
         spreadsheetId: this.spreadsheetId,
-        range: `${this.sheetName}!${this.range}`,
+        range: `${this.sheetName}!${this.range}:B1`,
       });
 
       const values = response.data.values;
       if (values && values.length > 0 && values[0].length > 0) {
-        const rawValue = values[0][0]; // Example: $1.009,75
-        
-        // 1. Remove thousands separators (periods)
-        const valueWithoutThousandsSep = String(rawValue).replace(/\./g, ''); // -> $1009,75
-        
-        // 2. Replace European decimal comma with standard period
-        const valueWithStandardDecimal = valueWithoutThousandsSep.replace(/,/g, '.'); // -> $1009.75
-        
-        // 3. Remove any remaining non-numeric characters (like currency symbols) except period and minus
-        const cleanedValue = valueWithStandardDecimal.replace(/[^\d.-]/g, ''); // -> 1009.75
-        
-        const numericValue = parseFloat(cleanedValue); // -> 1009.75
+        const rawApprovedValue = values[0][0]; // Example: $1.009,75
+        const rawNotInvoicedValue = values[0][1];
 
-        if (isNaN(numericValue)) {
-          console.error(`Value in ${this.sheetName}!${this.range} is not a valid number:`, rawValue);
-          // Return 0 or throw an error depending on desired behavior
-          return 0; 
-        }
-        console.log(`Fetched unclaimed gains: ${numericValue}`);
-        return numericValue;
+        return {
+          approvedGains: parseNumericValue(rawApprovedValue),
+          notInvoicedGains: parseNumericValue(rawNotInvoicedValue)
+        };
       } else {
         console.warn(`No value found in ${this.sheetName}!${this.range}. Returning 0.`);
-        return 0; // Return 0 if the cell is empty
+        return {
+          approvedGains: 0,
+          notInvoicedGains: 0
+        }; // Return 0 if the cell is empty
       }
     } catch (error) {
       // Check if it's an AxiosError or similar structure from googleapis if needed

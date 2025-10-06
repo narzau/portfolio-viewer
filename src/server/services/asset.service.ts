@@ -40,34 +40,21 @@ export class AssetService {
 
     // 2. Fetch unclaimed gains from Google Sheets
     try {
-      const {
-        approvedGains,
-        notInvoicedGains
-      } = await this.timeTrackingService.getUnclaimedGains();
+      const unclaimedGains = await this.timeTrackingService.getUnclaimedGains();
       
-      // 3. Create a virtual asset object for unclaimed gains
-      // Use a non-conflicting ID and walletId (e.g., negative numbers)
-      const virtualApprovedGainsAsset: DbAsset = {
-        id: -3, // Unique virtual ID
-        walletId: -3, // Unique virtual wallet ID
-        symbol: 'USDC', // Use USDC symbol to reuse its logo
-        name: 'Approved Gains',
-        balance: approvedGains.toString(),
-        price: '1', // Price is always 1 for USD representation
-        lastUpdated: new Date() // Use current time as last updated
-      };
+
       const virtualUnclaimedGainsAsset: DbAsset = {
         id: -2, // Unique virtual ID
         walletId: -2, // Unique virtual wallet ID
         symbol: 'USDC', // Use USDC symbol to reuse its logo
         name: 'Unclaimed Gains',
-        balance: notInvoicedGains.toString(),
+        balance: unclaimedGains.toString(),
         price: '1', // Price is always 1 for USD representation
         lastUpdated: new Date() // Use current time as last updated
       };
       
       // 4. Append the virtual asset to the list
-      combinedAssets = [...dbAssets, virtualUnclaimedGainsAsset, virtualApprovedGainsAsset];
+      combinedAssets = [...dbAssets, virtualUnclaimedGainsAsset];
 
     } catch (error) {
       console.error("Failed to fetch or process unclaimed gains, returning only DB assets:", error);

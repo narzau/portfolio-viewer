@@ -67,15 +67,8 @@ export class TimeTrackingService {
   // Compatibility method to replace GoogleSheetsService.getUnclaimedGains
   // We map the new API's unpaid total to approvedGains and set notInvoicedGains to 0
   // to avoid double counting, as the new API does not provide a separate figure.
-  async getUnclaimedGains(): Promise<{
-    approvedGains: number;
-    notInvoicedGains: number;
-  }> {
-    const amount = await this.getUnpaidTotal();
-    return {
-      approvedGains: amount,
-      notInvoicedGains: 0
-    };
+  async getUnclaimedGains(): Promise<number> {
+    return await this.getUnpaidTotal();
   }
 }
 

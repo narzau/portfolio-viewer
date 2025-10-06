@@ -26,6 +26,8 @@ export const settings = {
   // External services
   STORAGE_URL: process.env.STORAGE_URL || 'http://localhost:3000/storage',
   GOOGLE_API_KEY: process.env.GOOGLE_API_KEY || '',
+  TIME_TRACKING_API_BASE_URL: process.env.TIME_TRACKING_API_BASE_URL || '',
+  TIME_TRACKING_API_KEY: process.env.TIME_TRACKING_API_KEY || '',
 };
 
 export default settings;

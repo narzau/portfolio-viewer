@@ -5,7 +5,7 @@ import * as schema from '../db/schema';
 import { and, eq } from 'drizzle-orm';
 import { format } from 'date-fns';
 import { CryptoApiService } from './crypto-api.service';
-import { GoogleSheetsService } from './googleSheets.service';
+import { TimeTrackingService } from './time-tracking.service';
 
 // Define a type that matches the structure returned by repository.findAll()
 // Inferring from usage or repository definition is best, but defining explicitly works.
@@ -24,13 +24,13 @@ export class AssetService {
   private repository: AssetRepository;
   private cryptoApiService: CryptoApiService;
   private walletRepository: WalletRepository;
-  private googleSheetsService: GoogleSheetsService;
+  private timeTrackingService: TimeTrackingService;
 
   constructor() {
     this.repository = new AssetRepository();
     this.cryptoApiService = new CryptoApiService();
     this.walletRepository = new WalletRepository();
-    this.googleSheetsService = new GoogleSheetsService();
+    this.timeTrackingService = new TimeTrackingService();
   }
 
   async getAllAssets(): Promise<DbAsset[]> {
@@ -43,7 +43,7 @@ export class AssetService {
       const {
         approvedGains,
         notInvoicedGains
-      } = await this.googleSheetsService.getUnclaimedGains();
+      } = await this.timeTrackingService.getUnclaimedGains();
       
       // 3. Create a virtual asset object for unclaimed gains
       // Use a non-conflicting ID and walletId (e.g., negative numbers)

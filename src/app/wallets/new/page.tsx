@@ -4,7 +4,7 @@ import { useState, FormEvent } from 'react';
 import { useRouter } from 'next/navigation';
 import { trpc } from '@/lib/trpc/client'; // Assuming alias is set
 
-type WalletType = 'solana' | 'ethereum' | 'bitcoin';
+type WalletType = 'solana' | 'ethereum' | 'bitcoin' | 'arbitrum';
 
 export default function NewWalletPage() {
   const [name, setName] = useState('');
@@ -101,6 +101,7 @@ export default function NewWalletPage() {
             disabled={isLoading}
           >
             <option value="ethereum">Ethereum</option>
+            <option value="arbitrum">Arbitrum</option>
             <option value="solana">Solana</option>
             <option value="bitcoin">Bitcoin</option>
           </select>

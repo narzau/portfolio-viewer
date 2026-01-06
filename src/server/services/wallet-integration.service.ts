@@ -1,6 +1,7 @@
 import { AssetService } from './asset.service';
 import { SolanaIntegration } from '../../integrations/crypto/solana';
 import { EthereumIntegration } from '../../integrations/crypto/ethereum';
+import { ArbitrumIntegration } from '../../integrations/crypto/arbitrum';
 import { BitcoinIntegration } from '../../integrations/crypto/bitcoin';
 import { CryptoPrice } from '../../integrations/crypto/price';
 
@@ -8,6 +9,7 @@ export class WalletIntegrationService {
   private assetService: AssetService;
   private solanaIntegration: SolanaIntegration;
   private ethereumIntegration: EthereumIntegration;
+  private arbitrumIntegration: ArbitrumIntegration;
   private bitcoinIntegration: BitcoinIntegration;
   private cryptoPrice: CryptoPrice;
   
@@ -15,6 +17,7 @@ export class WalletIntegrationService {
     this.assetService = new AssetService();
     this.solanaIntegration = new SolanaIntegration();
     this.ethereumIntegration = new EthereumIntegration();
+    this.arbitrumIntegration = new ArbitrumIntegration();
     this.bitcoinIntegration = new BitcoinIntegration();
     this.cryptoPrice = new CryptoPrice();
   }
@@ -28,6 +31,8 @@ export class WalletIntegrationService {
         return await this.updateSolanaWallet(walletId, address, prices);
       } else if (walletType === 'ethereum') {
         return await this.updateEthereumWallet(walletId, address, prices);
+      } else if (walletType === 'arbitrum') {
+        return await this.updateArbitrumWallet(walletId, address, prices);
       } else if (walletType === 'bitcoin') {
         return await this.updateBitcoinWallet(walletId, address, prices);
       } else if (walletType === 'monero') {
@@ -73,6 +78,21 @@ export class WalletIntegrationService {
     }
   }
   
+  // Update Arbitrum wallet
+  private async updateArbitrumWallet(walletId: number, address: string, prices: {[key: string]: number}) {
+    try {
+      // Get ETH (on Arbitrum) balance
+      const ethBalance = await this.arbitrumIntegration.getEthBalance(address);
+      await this.assetService.updateAssetBalance(walletId, 'ETH', 'Ethereum (Arbitrum)', ethBalance, prices['eth'] ?? 0);
+
+      // Get USDC (on Arbitrum) balance
+      const usdcBalance = await this.arbitrumIntegration.getUsdcBalance(address);
+      await this.assetService.updateAssetBalance(walletId, 'USDC', 'USD Coin (Arbitrum)', usdcBalance, prices['usdc'] ?? 1);
+    } catch (error) {
+      console.error(`[WalletIntegrationService] Error updating Arbitrum wallet:`, error);
+    }
+  }
+
   // Update Bitcoin wallet
   private async updateBitcoinWallet(walletId: number, address: string, prices: {[key: string]: number}) {
     try {
